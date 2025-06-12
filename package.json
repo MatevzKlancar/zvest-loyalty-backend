@@ -1,0 +1,38 @@
+{
+  "name": "zvest-backend-pos",
+  "version": "1.0.0",
+  "description": "Backend for loyalty platform with POS integration",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "bun run --hot src/index.ts",
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir ./dist",
+    "db:generate": "supabase gen types typescript --local > src/types/database.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@hono/swagger-ui": "^0.2.0",
+    "@hono/zod-openapi": "^0.19.8",
+    "@hono/zod-validator": "^0.7.0",
+    "@scalar/hono-api-reference": "^0.5.0",
+    "@supabase/supabase-js": "^2.39.0",
+    "hono": "^3.12.0",
+    "pino": "^8.17.0",
+    "pino-pretty": "^10.3.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.0.0",
+    "bun-types": "^1.0.0"
+  },
+  "keywords": [
+    "loyalty",
+    "pos",
+    "backend",
+    "hono",
+    "supabase",
+    "bun"
+  ],
+  "author": "Zvest Team",
+  "license": "MIT"
+}

@@ -1,0 +1,166 @@
+# Zvest POS Integration API Tests
+# Use with VS Code REST Client extension or similar HTTP client
+
+@baseURL = http://localhost:3000
+@apiKey = test-api-key-elektronček-pos-2024
+
+### Health Check
+GET {{baseURL}}/health
+
+### Get API Documentation
+GET {{baseURL}}/docs
+
+### Get OpenAPI Specification
+GET {{baseURL}}/api-spec
+
+##########################################################
+# POS Integration Endpoints
+##########################################################
+
+### POS Provider Endpoints
+
+### Get shops for POS provider
+GET {{baseURL}}/api/pos/shops
+x-api-key: {{apiKey}}
+
+### Sync shop with POS system (replaces create shop)
+POST {{baseURL}}/api/pos/shops/sync
+x-api-key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "shop_uuid": "123e4567-e89b-12d3-a456-426614174000",
+  "pos_shop_id": "shop-001",
+  "pos_data": {
+    "name": "Coffee Shop Downtown",
+    "location": "Main Street 123, City",
+    "contact": "+1-555-0123",
+    "operating_hours": {
+      "monday": "08:00-18:00",
+      "tuesday": "08:00-18:00",
+      "wednesday": "08:00-18:00",
+      "thursday": "08:00-18:00",
+      "friday": "08:00-18:00",
+      "saturday": "09:00-17:00",
+      "sunday": "10:00-16:00"
+    },
+    "additional_data": {
+      "pos_version": "2.1.0",
+      "currency": "EUR"
+    }
+  }
+}
+
+### Update shop articles
+POST {{baseURL}}/api/pos/shops/123e4567-e89b-12d3-a456-426614174000/articles
+x-api-key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "articles": [
+    {
+      "id": "art-001",
+      "name": "Espresso",
+      "price": 2.50,
+      "description": "Strong Italian coffee",
+      "type": "beverage"
+    },
+    {
+      "id": "art-002",
+      "name": "Cappuccino",
+      "price": 3.20,
+      "description": "Coffee with steamed milk foam",
+      "type": "beverage"
+    },
+    {
+      "id": "art-003",
+      "name": "Croissant",
+      "price": 1.80,
+      "description": "Fresh buttery croissant",
+      "type": "pastry"
+    }
+  ]
+}
+
+### Get shop coupons
+GET {{baseURL}}/api/pos/shops/123e4567-e89b-12d3-a456-426614174000/coupons
+x-api-key: {{apiKey}}
+
+### Validate and use coupon
+POST {{baseURL}}/api/pos/coupons/validate
+x-api-key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "shop_id": "123e4567-e89b-12d3-a456-426614174000",
+  "coupon_id": "123e4567-e89b-12d3-a456-426614174001"
+}
+
+### Create transaction
+POST {{baseURL}}/api/pos/transactions
+x-api-key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "shop_id": "123e4567-e89b-12d3-a456-426614174000",
+  "pos_invoice_id": "INV-2024-001",
+  "total_amount": 5.70,
+  "items": [
+    {
+      "article_id": "art-001",
+      "name": "Espresso",
+      "quantity": 2,
+      "price": 2.50,
+      "total": 5.00
+    },
+    {
+      "article_id": "art-003",
+      "name": "Croissant",
+      "quantity": 1,
+      "price": 1.80,
+      "total": 1.80
+    }
+  ]
+}
+
+##########################################################
+# Customer App Endpoints
+##########################################################
+
+### Scan QR code from receipt to award loyalty
+POST {{baseURL}}/api/customers/scan
+Content-Type: application/json
+
+{
+  "shop_id": "123e4567-e89b-12d3-a456-426614174000",
+  "invoice_id": "INV-2024-001",
+  "customer_id": "customer-uuid-optional"
+}
+
+### Get transaction details without awarding loyalty
+POST {{baseURL}}/api/customers/transaction
+Content-Type: application/json
+
+{
+  "shop_id": "SHOP_UUID_HERE",
+  "invoice_id": "INV-2024-001"
+}
+
+##########################################################
+# Error Cases
+##########################################################
+
+### Invalid API key
+GET {{baseURL}}/api/pos/shops
+x-api-key: invalid-key
+
+### Missing API key
+GET {{baseURL}}/api/pos/shops
+
+### Invalid shop ID format
+GET {{baseURL}}/api/pos/shops/invalid-uuid/coupons
+x-api-key: {{apiKey}}
+
+### Shop not found
+GET {{baseURL}}/api/pos/shops/123e4567-e89b-12d3-a456-426614174000/coupons
+x-api-key: {{apiKey}} 
