@@ -1,3 +1,39 @@
+# Project specific
+.env*
+!env.example
+*.env
+config.json
+config.yaml
+config.yml
+secrets.json
+
+# API keys and sensitive data
+*secret*
+*key*
+*token*
+*.pem
+*.p12
+*.pfx
+
+# Database
+*.db-journal
+*.sqlite*
+*.db
+database.json
+db-backup.*
+
+# Supabase local
+supabase/.branches
+supabase/.temp
+
+# Bun specific
+.bun/
+
+# Build outputs
+dist/
+build/
+out/
+
 # Dependencies
 node_modules/
 *.pnp
