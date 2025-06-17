@@ -8,6 +8,7 @@
     "start": "bun run src/index.ts",
     "build": "bun build src/index.ts --outdir ./dist",
     "db:generate": "supabase gen types typescript --local > src/types/database.ts",
+    "db:generate-platform": "supabase gen types typescript --project-id YOUR_PROJECT_ID > src/types/platform-database.ts",
     "test": "bun test"
   },
   "dependencies": {
