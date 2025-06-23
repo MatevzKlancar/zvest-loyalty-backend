@@ -11,8 +11,22 @@ import { env } from "./config/env";
 import adminRoutes from "./routes/admin";
 import posRoutes from "./routes/pos";
 import appRoutes from "./routes/app";
+// DatabaseSeeder import removed
 
-const app = new OpenAPIHono();
+const app = new OpenAPIHono({
+  defaultHook: (result, c) => {
+    if (!result.success) {
+      return c.json(
+        {
+          success: false,
+          message: "Validation failed",
+          errors: result.error.flatten(),
+        },
+        400
+      );
+    }
+  },
+});
 
 // Middleware
 app.use("*", cors());
@@ -25,6 +39,14 @@ app.get("/health", (c) => {
     timestamp: new Date().toISOString(),
     version: "2.0.0",
   });
+});
+
+// Register security schemes
+app.openAPIRegistry.registerComponent("securitySchemes", "ApiKeyAuth", {
+  type: "apiKey",
+  in: "header",
+  name: "x-api-key",
+  description: "API Key for POS provider authentication",
 });
 
 // API Documentation
@@ -52,9 +74,14 @@ The Zvest Loyalty Platform enables businesses to implement loyalty programs with
 
 ## Authentication
 
-The API uses API Key authentication for POS providers:
-- Include \`X-API-Key\` header in all POS requests
-- Contact admin to obtain your API key
+The API uses API Key authentication for POS provider endpoints:
+
+**For POS Integration endpoints** (\`/api/pos/*\`):
+- **Required Header**: \`x-api-key: your-pos-api-key\`
+- Generate API keys using: \`bun run scripts/generate-api-keys.ts\`
+- Configure in environment: \`POS_PROVIDERS="Provider Name:api-key"\`
+
+**Admin and Customer App endpoints** do not require authentication.
 
 ## Integration Flow
 
@@ -103,11 +130,6 @@ The API uses API Key authentication for POS providers:
       name: "Customer App",
       description:
         "Customer-facing mobile app endpoints. Used by the customer mobile application to scan QR codes and redeem loyalty points.",
-    },
-  ],
-  security: [
-    {
-      ApiKeyAuth: [],
     },
   ],
 });
@@ -163,10 +185,17 @@ app.get("/", (c) => {
         "POST /api/admin/shops/by-name (with customer_name)",
       "3_get_shops": "GET /api/pos/shops",
       "4_enable_shop": "POST /api/pos/shops/{id}/enable",
-      "5_sync_menu": "POST /api/pos/shops/{id}/articles",
+      "5_sync_menu":
+        "POST /api/pos/shops/{id}/articles (with time-based pricing)",
       "6_create_transaction": "POST /api/pos/transactions",
       "7_get_qr_data": "GET /api/pos/transactions/{id}/qr-data",
       "8_scan_qr": "POST /api/app/scan-qr",
+    },
+    pricing_features: {
+      current_pricing: "GET /api/pos/shops/{id}/current-pricing",
+      time_based_rules:
+        "Support for happy hour, morning specials, weekend pricing",
+      coupon_eligibility: "Per-article coupon eligibility flags",
     },
     admin_helpers: {
       list_customers: "GET /api/admin/customers",
@@ -199,6 +228,8 @@ app.onError((err, c) => {
     500
   );
 });
+
+// Database seeding removed - no automatic seeding on startup
 
 // Start server
 const port = env.PORT || 3000;

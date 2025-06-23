@@ -1,13 +1,13 @@
 import { Context, Next } from "hono";
-import { supabase } from "../config/database";
 import { logger } from "../config/logger";
+import { getPosProvidersFromEnv } from "../config/env";
+import { supabase } from "../config/database";
 
 export interface AuthContext {
   Variables: {
     posProvider: {
       id: string;
       name: string;
-      api_key: string;
     };
   };
 }
@@ -22,7 +22,7 @@ export async function authenticatePOSProvider(
     logger.warn("Missing API key in request");
     return c.json(
       {
-        status: 500,
+        status: 401,
         message: "API key is required",
         error_source: "client",
       },
@@ -31,17 +31,15 @@ export async function authenticatePOSProvider(
   }
 
   try {
-    const { data: provider, error } = await supabase
-      .from("pos_providers")
-      .select("id, name, api_key")
-      .eq("api_key", apiKey)
-      .single();
+    // Get valid API keys from environment
+    const validProviders = getPosProvidersFromEnv();
+    const provider = validProviders.find((p) => p.apiKey === apiKey);
 
-    if (error || !provider) {
-      logger.warn(`Invalid API key attempt: ${apiKey}`);
+    if (!provider) {
+      logger.warn(`Invalid API key attempt: ${apiKey.substring(0, 10)}...`);
       return c.json(
         {
-          status: 500,
+          status: 401,
           message: "Invalid API key",
           error_source: "client",
         },
@@ -49,12 +47,36 @@ export async function authenticatePOSProvider(
       );
     }
 
-    c.set("posProvider", provider);
-    logger.info(`Authenticated POS provider: ${provider.name}`);
+    // Look up the actual database POS provider by name
+    const { data: dbProvider, error } = await supabase
+      .from("pos_providers")
+      .select("id, name")
+      .eq("name", provider.name)
+      .eq("is_active", true)
+      .single();
 
+    if (error || !dbProvider) {
+      logger.error(`Database POS provider not found: ${provider.name}`, error);
+      return c.json(
+        {
+          status: 500,
+          message: "POS provider configuration error",
+          error_source: "server",
+        },
+        500
+      );
+    }
+
+    // Set the database provider object
+    c.set("posProvider", {
+      id: dbProvider.id,
+      name: dbProvider.name,
+    });
+
+    logger.info(`Authenticated POS provider: ${provider.name}`);
     await next();
   } catch (error) {
-    logger.error("Database error during authentication:", error);
+    logger.error("Error during authentication:", error);
     return c.json(
       {
         status: 500,

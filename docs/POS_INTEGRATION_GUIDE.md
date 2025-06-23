@@ -89,9 +89,9 @@ x-api-key: your-api-key
 }
 ```
 
-### Step 2: Menu/Articles Management (Optional)
+### Step 2: Menu/Articles Management with Time-Based Pricing
 
-Update shop menu items for better transaction tracking:
+Update shop menu items with support for time-based pricing (happy hours, morning specials, etc.):
 
 #### Endpoint: Update Shop Articles
 
@@ -103,21 +103,76 @@ x-api-key: your-api-key
 {
   "articles": [
     {
-      "id": "art_001",
+      "pos_article_id": "art_001",
       "name": "Cappuccino",
-      "price": 4.50,
+      "base_price": 4.50,
       "description": "Coffee with steamed milk foam",
-      "type": "beverage"
+      "category": "beverages",
+      "type": "coffee",
+      "is_coupon_eligible": true,
+      "pricing_rules": [
+        {
+          "name": "Morning Special",
+          "price": 3.00,
+          "start_time": "08:00",
+          "end_time": "10:00",
+          "days_of_week": [1,2,3,4,5],
+          "priority": 10,
+          "description": "Weekday morning discount"
+        },
+        {
+          "name": "Happy Hour",
+          "price": 3.50,
+          "start_time": "16:00",
+          "end_time": "18:00",
+          "days_of_week": [1,2,3,4,5],
+          "priority": 5,
+          "description": "Afternoon special"
+        }
+      ]
     },
     {
-      "id": "art_002",
-      "name": "Croissant",
-      "price": 3.20,
-      "description": "Fresh buttery croissant",
-      "type": "pastry"
+      "pos_article_id": "art_002",
+      "name": "Beer",
+      "base_price": 5.00,
+      "description": "Local craft beer",
+      "category": "alcohol",
+      "type": "beverage",
+      "is_coupon_eligible": false,
+      "pricing_rules": [
+        {
+          "name": "Weekend Premium",
+          "price": 6.00,
+          "days_of_week": [6,7],
+          "priority": 1,
+          "description": "Weekend premium pricing"
+        }
+      ]
     }
   ]
 }
+```
+
+#### Time-Based Pricing Features:
+
+- **Happy Hour Pricing**: Different prices for specific time ranges
+- **Day-of-Week Pricing**: Weekend vs weekday pricing
+- **Date Range Pricing**: Seasonal specials with start/end dates
+- **Priority System**: Higher priority rules override lower priority ones
+- **Coupon Eligibility**: Control which items can use coupons
+
+#### Get Current Pricing:
+
+```http
+GET /api/pos/shops/{shop_uuid}/current-pricing
+x-api-key: your-api-key
+```
+
+Returns current prices for all articles based on the current time, or specify a time:
+
+```http
+GET /api/pos/shops/{shop_uuid}/current-pricing?check_time=2024-01-15T09:00:00Z
+x-api-key: your-api-key
 ```
 
 ### Step 3: Transaction Processing

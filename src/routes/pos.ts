@@ -21,12 +21,30 @@ const syncArticlesSchema = z.object({
     z.object({
       pos_article_id: z.string(),
       name: z.string(),
-      price: z.number().min(0),
+      base_price: z.number().min(0), // Default/fallback price
       description: z.string().optional(),
       category: z.string().optional(),
       type: z.string().optional(),
       tax_type: z.string().optional(),
       tax_rate: z.number().optional(),
+      is_coupon_eligible: z.boolean().optional().default(true),
+      // Time-based pricing rules (optional)
+      pricing_rules: z
+        .array(
+          z.object({
+            name: z.string().optional(), // e.g., "Happy Hour", "Morning Special"
+            price: z.number().min(0),
+            start_time: z.string().optional(), // "08:00" format
+            end_time: z.string().optional(), // "10:00" format
+            start_date: z.string().optional(), // "2024-01-01" format
+            end_date: z.string().optional(), // "2024-12-31" format
+            days_of_week: z.array(z.number().min(1).max(7)).optional(), // [1,2,3,4,5] for Mon-Fri
+            priority: z.number().optional().default(0),
+            description: z.string().optional(),
+          })
+        )
+        .optional()
+        .default([]),
     })
   ),
 });
@@ -106,6 +124,7 @@ pos.openapi(getShopsRoute, async (c) => {
   try {
     const posProvider = c.get("posProvider");
 
+    // Get shops that belong to this POS provider
     const { data: shops, error } = await supabase
       .from("shops")
       .select(
@@ -121,6 +140,7 @@ pos.openapi(getShopsRoute, async (c) => {
       `
       )
       .eq("pos_provider_id", posProvider.id)
+      .eq("status", "active")
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -180,7 +200,7 @@ pos.openapi(enableShopRoute, async (c) => {
     const enableData = c.req.valid("json");
     const posProvider = c.get("posProvider");
 
-    // Verify shop belongs to this POS provider and is pending
+    // Verify shop belongs to this POS provider
     const { data: existingShop, error: shopError } = await supabase
       .from("shops")
       .select("*")
@@ -307,27 +327,69 @@ pos.openapi(syncArticlesRoute, async (c) => {
       return c.json(standardResponse(500, "Failed to sync articles"), 500);
     }
 
-    // Insert new articles
+    // Insert new articles and their pricing rules
     if (articles.length > 0) {
       const articleInserts = articles.map((article) => ({
         shop_id,
         pos_article_id: article.pos_article_id,
         name: article.name,
-        price: article.price,
+        base_price: article.base_price,
         description: article.description || null,
         category: article.category || null,
         type: article.type || null,
         tax_type: article.tax_type || null,
         tax_rate: article.tax_rate || 0,
+        is_coupon_eligible: article.is_coupon_eligible ?? true,
       }));
 
-      const { error: insertError } = await supabase
+      const { data: insertedArticles, error: insertError } = await supabase
         .from("articles")
-        .insert(articleInserts);
+        .insert(articleInserts)
+        .select("id, pos_article_id");
 
       if (insertError) {
         logger.error("Failed to insert new articles:", insertError);
         return c.json(standardResponse(500, "Failed to sync articles"), 500);
+      }
+
+      // Insert pricing rules for articles that have them
+      const pricingRuleInserts: any[] = [];
+      for (const article of articles) {
+        if (article.pricing_rules && article.pricing_rules.length > 0) {
+          const articleId = insertedArticles.find(
+            (a) => a.pos_article_id === article.pos_article_id
+          )?.id;
+
+          if (articleId) {
+            for (const rule of article.pricing_rules) {
+              pricingRuleInserts.push({
+                article_id: articleId,
+                name: rule.name || null,
+                price: rule.price,
+                start_time: rule.start_time || null,
+                end_time: rule.end_time || null,
+                start_date: rule.start_date || null,
+                end_date: rule.end_date || null,
+                days_of_week: rule.days_of_week || null,
+                priority: rule.priority || 0,
+                description: rule.description || null,
+              });
+            }
+          }
+        }
+      }
+
+      // Insert pricing rules if any exist
+      if (pricingRuleInserts.length > 0) {
+        const { error: pricingError } = await supabase
+          .from("article_pricing")
+          .insert(pricingRuleInserts);
+
+        if (pricingError) {
+          logger.error("Failed to insert pricing rules:", pricingError);
+          // Don't fail the entire sync, just log the error
+          logger.warn("Continuing sync without pricing rules");
+        }
       }
     }
 
@@ -628,6 +690,105 @@ pos.openapi(getQRDataRoute, async (c) => {
     );
   } catch (error) {
     logger.error("Error getting QR data:", error);
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
+// Get current pricing for articles (useful for POS systems to check prices)
+const getCurrentPricingRoute = createRoute({
+  method: "get",
+  path: "/shops/{shop_id}/current-pricing",
+  summary: "Get current pricing for all shop articles",
+  description:
+    "Returns current prices for all articles based on time-based pricing rules",
+  tags: ["POS Integration"],
+  security: [{ ApiKeyAuth: [] }],
+  request: {
+    params: z.object({
+      shop_id: z.string().uuid("Invalid shop ID"),
+    }),
+    query: z.object({
+      check_time: z.string().optional(), // ISO timestamp, defaults to now
+    }),
+  },
+  responses: {
+    200: {
+      description: "Current pricing retrieved successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.object({
+              shop_id: z.string().uuid(),
+              check_time: z.string(),
+              articles: z.array(
+                z.object({
+                  id: z.string().uuid(),
+                  pos_article_id: z.string(),
+                  name: z.string(),
+                  base_price: z.number(),
+                  current_price: z.number(),
+                  active_pricing_rule: z.string().nullable(),
+                })
+              ),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+pos.openapi(getCurrentPricingRoute, async (c) => {
+  try {
+    const { shop_id } = c.req.valid("param");
+    const { check_time } = c.req.valid("query");
+    const posProvider = c.get("posProvider");
+
+    // Verify shop belongs to POS provider
+    const { data: shop, error: shopError } = await supabase
+      .from("shops")
+      .select("id")
+      .eq("id", shop_id)
+      .eq("pos_provider_id", posProvider.id)
+      .eq("status", "active")
+      .single();
+
+    if (shopError || !shop) {
+      return c.json(
+        standardResponse(404, "Shop not found or access denied"),
+        404
+      );
+    }
+
+    const checkTimestamp = check_time || new Date().toISOString();
+
+    // Get all articles with current pricing
+    const { data: articles, error } = await supabase.rpc(
+      "get_shop_current_pricing",
+      {
+        p_shop_id: shop_id,
+        p_check_time: checkTimestamp,
+      }
+    );
+
+    if (error) {
+      logger.error("Failed to get current pricing:", error);
+      return c.json(standardResponse(500, "Failed to get pricing"), 500);
+    }
+
+    const result = {
+      shop_id,
+      check_time: checkTimestamp,
+      articles: articles || [],
+    };
+
+    return c.json(
+      standardResponse(200, "Current pricing retrieved successfully", result)
+    );
+  } catch (error) {
+    logger.error("Error getting current pricing:", error);
     return c.json(standardResponse(500, "Internal server error"), 500);
   }
 });

@@ -15,12 +15,11 @@ CREATE TABLE IF NOT EXISTS customers (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Create POS providers table
+-- Create POS providers table (for reference only - no API keys stored)
 CREATE TABLE IF NOT EXISTS pos_providers (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name VARCHAR NOT NULL,
     description TEXT,
-    api_key VARCHAR UNIQUE NOT NULL,
     webhook_url VARCHAR,
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -56,16 +55,40 @@ CREATE TABLE IF NOT EXISTS articles (
     shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
     pos_article_id VARCHAR NOT NULL,
     name VARCHAR NOT NULL,
-    price DECIMAL(10,2) NOT NULL CHECK (price >= 0),
+    base_price DECIMAL(10,2) NOT NULL CHECK (base_price >= 0), -- Default/fallback price
     description TEXT,
     category VARCHAR,
     type VARCHAR,
     tax_type VARCHAR,
     tax_rate DECIMAL(5,2) DEFAULT 0,
+    is_coupon_eligible BOOLEAN DEFAULT true,
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     UNIQUE(shop_id, pos_article_id)
+);
+
+-- Create article pricing table for time-based pricing
+CREATE TABLE IF NOT EXISTS article_pricing (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    article_id UUID NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+    price DECIMAL(10,2) NOT NULL CHECK (price >= 0),
+    -- Time-based pricing
+    start_time TIME, -- e.g., '08:00:00' for 8am
+    end_time TIME,   -- e.g., '10:00:00' for 10am
+    -- Date-based pricing (optional)
+    start_date DATE, -- e.g., '2024-12-01' for seasonal pricing
+    end_date DATE,   -- e.g., '2024-12-31'
+    -- Day of week pricing (1=Monday, 7=Sunday)
+    days_of_week INTEGER[], -- e.g., [1,2,3,4,5] for weekdays, [6,7] for weekends
+    -- Rule priority (higher number = higher priority)
+    priority INTEGER DEFAULT 0,
+    -- Rule name for admin reference
+    name VARCHAR, -- e.g., "Happy Hour", "Morning Special"
+    description TEXT,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- Create loyalty programs table
@@ -185,9 +208,10 @@ CREATE INDEX idx_transactions_shop_id ON transactions(shop_id);
 CREATE INDEX idx_transaction_logs_transaction_id ON transaction_logs(transaction_id);
 
 -- Critical business logic indexes
-CREATE INDEX idx_pos_providers_api_key ON pos_providers(api_key); -- For authentication
 CREATE INDEX idx_coupons_code ON coupons(code); -- For coupon lookups
 CREATE INDEX idx_transactions_pos_invoice_id ON transactions(pos_invoice_id); -- For POS integration
+CREATE INDEX idx_article_pricing_article_id ON article_pricing(article_id); -- For price lookups
+CREATE INDEX idx_article_pricing_active_priority ON article_pricing(article_id, is_active, priority); -- For current price queries
 
 -- ONLY ONE TRIGGER for updated_at (we'll add it manually where needed)
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -230,42 +254,110 @@ CREATE TRIGGER set_transaction_qr_code_trigger
     FOR EACH ROW 
     EXECUTE FUNCTION set_transaction_qr_code();
 
--- Insert sample data for development
-INSERT INTO customers (name, type, subscription_tier) VALUES 
-('Platform Customers', 'platform', 'basic')
-ON CONFLICT DO NOTHING;
+-- No hardcoded sample data - all seeding is handled by the application startup
+-- This ensures API keys and test data come from environment configuration 
 
-INSERT INTO pos_providers (name, description, api_key) VALUES 
-('Elektronček POS', 'Primary POS integration partner', 'test-api-key-elektronček-pos-2024')
-ON CONFLICT (api_key) DO NOTHING;
-
--- Insert sample shop for platform customers
-DO $$
+-- Function to get current price for an article
+CREATE OR REPLACE FUNCTION get_current_article_price(
+    p_article_id UUID,
+    p_check_time TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+)
+RETURNS DECIMAL(10,2) AS $$
 DECLARE
-    platform_customer_id UUID;
-    provider_id UUID;
-    shop_id UUID;
-    loyalty_program_id UUID;
+    current_price DECIMAL(10,2);
+    base_price DECIMAL(10,2);
+    check_time_local TIME;
+    check_date_local DATE;
+    check_dow INTEGER;
 BEGIN
-    SELECT id INTO platform_customer_id FROM customers WHERE type = 'platform' LIMIT 1;
-    SELECT id INTO provider_id FROM pos_providers WHERE api_key = 'test-api-key-elektronček-pos-2024';
+    -- Get base price
+    SELECT a.base_price INTO base_price
+    FROM articles a
+    WHERE a.id = p_article_id AND a.is_active = true;
     
-    INSERT INTO shops (customer_id, pos_provider_id, name, description, type, status, approved_by, approved_at) VALUES 
-    (platform_customer_id, provider_id, 'Test Coffee Shop', 'A sample coffee shop for testing the platform', 'coffee', 'active', 'admin', NOW())
-    ON CONFLICT DO NOTHING
-    RETURNING id INTO shop_id;
-    
-    IF shop_id IS NOT NULL THEN
-        INSERT INTO loyalty_programs (shop_id, type, name, description, points_per_euro, is_active) VALUES 
-        (shop_id, 'points', 'Coffee Points', 'Earn 10 points per euro spent', 10.00, true)
-        RETURNING id INTO loyalty_program_id;
-        
-        INSERT INTO coupons (shop_id, code, type, value, description, usage_limit) VALUES 
-        (shop_id, 'WELCOME10', 'percentage', 10.00, '10% discount for new customers', 100);
-        
-        INSERT INTO articles (shop_id, pos_article_id, name, price, description, category, type) VALUES 
-        (shop_id, 'COFFEE_ESP', 'Espresso', 2.50, 'Classic espresso shot', 'beverages', 'coffee'),
-        (shop_id, 'COFFEE_CAP', 'Cappuccino', 3.50, 'Espresso with steamed milk foam', 'beverages', 'coffee'),
-        (shop_id, 'PASTRY_CROIS', 'Croissant', 2.80, 'Fresh butter croissant', 'pastries', 'food');
+    IF base_price IS NULL THEN
+        RETURN NULL; -- Article not found
     END IF;
-END $$; 
+    
+    -- Extract local time components
+    check_time_local := p_check_time::TIME;
+    check_date_local := p_check_time::DATE;
+    check_dow := EXTRACT(DOW FROM p_check_time); -- 0=Sunday, 1=Monday, etc.
+    -- Adjust to 1=Monday, 7=Sunday format
+    check_dow := CASE WHEN check_dow = 0 THEN 7 ELSE check_dow END;
+    
+    -- Find matching pricing rule with highest priority
+    SELECT ap.price INTO current_price
+    FROM article_pricing ap
+    WHERE ap.article_id = p_article_id
+    AND ap.is_active = true
+    AND (
+        -- Time match (if specified)
+        (ap.start_time IS NULL OR ap.end_time IS NULL) OR
+        (ap.start_time <= check_time_local AND ap.end_time >= check_time_local)
+    )
+    AND (
+        -- Date match (if specified)
+        (ap.start_date IS NULL OR ap.end_date IS NULL) OR
+        (ap.start_date <= check_date_local AND ap.end_date >= check_date_local)
+    )
+    AND (
+        -- Day of week match (if specified)
+        ap.days_of_week IS NULL OR
+        check_dow = ANY(ap.days_of_week)
+    )
+    ORDER BY ap.priority DESC, ap.created_at DESC
+    LIMIT 1;
+    
+    -- Return pricing rule price if found, otherwise base price
+    RETURN COALESCE(current_price, base_price);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to get current pricing for all articles in a shop
+CREATE OR REPLACE FUNCTION get_shop_current_pricing(
+    p_shop_id UUID,
+    p_check_time TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+)
+RETURNS TABLE(
+    id UUID,
+    pos_article_id VARCHAR,
+    name VARCHAR,
+    base_price DECIMAL(10,2),
+    current_price DECIMAL(10,2),
+    active_pricing_rule VARCHAR
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        a.id,
+        a.pos_article_id,
+        a.name,
+        a.base_price,
+        get_current_article_price(a.id, p_check_time) as current_price,
+        (
+            SELECT ap.name
+            FROM article_pricing ap
+            WHERE ap.article_id = a.id
+            AND ap.is_active = true
+            AND (
+                (ap.start_time IS NULL OR ap.end_time IS NULL) OR
+                (ap.start_time <= p_check_time::TIME AND ap.end_time >= p_check_time::TIME)
+            )
+            AND (
+                (ap.start_date IS NULL OR ap.end_date IS NULL) OR
+                (ap.start_date <= p_check_time::DATE AND ap.end_date >= p_check_time::DATE)
+            )
+            AND (
+                ap.days_of_week IS NULL OR
+                (CASE WHEN EXTRACT(DOW FROM p_check_time) = 0 THEN 7 ELSE EXTRACT(DOW FROM p_check_time) END) = ANY(ap.days_of_week)
+            )
+            ORDER BY ap.priority DESC, ap.created_at DESC
+            LIMIT 1
+        ) as active_pricing_rule
+    FROM articles a
+    WHERE a.shop_id = p_shop_id
+    AND a.is_active = true
+    ORDER BY a.name;
+END;
+$$ LANGUAGE plpgsql; 

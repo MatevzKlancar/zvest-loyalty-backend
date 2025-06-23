@@ -2,7 +2,7 @@
 # Use with VS Code REST Client extension or similar HTTP client
 
 @baseURL = http://localhost:3000
-@apiKey = test-api-key-elektronček-pos-2024
+@apiKey = your-pos-provider-api-key
 
 ### Health Check
 GET {{baseURL}}/health
@@ -51,7 +51,7 @@ Content-Type: application/json
   }
 }
 
-### Update shop articles
+### Update shop articles with time-based pricing
 POST {{baseURL}}/api/pos/shops/123e4567-e89b-12d3-a456-426614174000/articles
 x-api-key: {{apiKey}}
 Content-Type: application/json
@@ -59,28 +59,70 @@ Content-Type: application/json
 {
   "articles": [
     {
-      "id": "art-001",
+      "pos_article_id": "art-001",
       "name": "Espresso",
-      "price": 2.50,
+      "base_price": 2.50,
       "description": "Strong Italian coffee",
-      "type": "beverage"
+      "category": "beverages",
+      "type": "coffee",
+      "is_coupon_eligible": true,
+      "pricing_rules": [
+        {
+          "name": "Morning Special",
+          "price": 1.00,
+          "start_time": "08:00",
+          "end_time": "10:00",
+          "days_of_week": [1,2,3,4,5],
+          "priority": 10,
+          "description": "Weekday morning discount"
+        },
+        {
+          "name": "Happy Hour",
+          "price": 2.00,
+          "start_time": "16:00", 
+          "end_time": "18:00",
+          "days_of_week": [1,2,3,4,5],
+          "priority": 5,
+          "description": "Afternoon special"
+        }
+      ]
     },
     {
-      "id": "art-002",
-      "name": "Cappuccino",
-      "price": 3.20,
+      "pos_article_id": "art-002",
+      "name": "Cappuccino", 
+      "base_price": 3.20,
       "description": "Coffee with steamed milk foam",
-      "type": "beverage"
+      "category": "beverages",
+      "type": "coffee"
     },
     {
-      "id": "art-003",
-      "name": "Croissant",
-      "price": 1.80,
-      "description": "Fresh buttery croissant",
-      "type": "pastry"
+      "pos_article_id": "art-003",
+      "name": "Beer",
+      "base_price": 5.00,
+      "description": "Local craft beer",
+      "category": "alcohol",
+      "type": "beverage",
+      "is_coupon_eligible": false,
+      "pricing_rules": [
+        {
+          "name": "Weekend Premium",
+          "price": 6.00,
+          "days_of_week": [6,7],
+          "priority": 1,
+          "description": "Weekend premium pricing"
+        }
+      ]
     }
   ]
 }
+
+### Get current pricing for all articles
+GET {{baseURL}}/api/pos/shops/123e4567-e89b-12d3-a456-426614174000/current-pricing
+x-api-key: {{apiKey}}
+
+### Get current pricing at specific time (9am on Monday)
+GET {{baseURL}}/api/pos/shops/123e4567-e89b-12d3-a456-426614174000/current-pricing?check_time=2024-01-15T09:00:00Z
+x-api-key: {{apiKey}}
 
 ### Get shop coupons
 GET {{baseURL}}/api/pos/shops/123e4567-e89b-12d3-a456-426614174000/coupons
