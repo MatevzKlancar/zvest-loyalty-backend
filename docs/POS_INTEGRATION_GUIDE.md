@@ -30,7 +30,7 @@ This document outlines the technical integration between your POS system and the
 ### Base URL
 
 ```
-Production: https://api.zvest.com
+Production: https://zvest-loyalty-backend.onrender.com
 Staging: https://staging-api.zvest.com
 ```
 
@@ -398,8 +398,8 @@ We'll provide you with:
 
 ### API Documentation:
 
-- Interactive docs: `https://api.zvest.com/docs`
-- OpenAPI spec: `https://api.zvest.com/api-spec`
+- Interactive docs: `https://zvest-loyalty-backend.onrender.com/api/docs`
+- OpenAPI spec: `https://zvest-loyalty-backend.onrender.com/api/openapi.json`
 
 ### Technical Support:
 

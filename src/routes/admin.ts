@@ -69,7 +69,7 @@ Creates a new B2B customer account for platform integration. This is the first s
 
 **Example Usage:**
 \`\`\`bash
-curl -X POST https://api.zvest.com/api/admin/customers \\
+curl -X POST https://zvest-loyalty-backend.onrender.com/api/admin/customers \\
   -H "Content-Type: application/json" \\
   -d '{
     "name": "Coffee House Chain",

@@ -109,7 +109,7 @@ The API uses API Key authentication for POS provider endpoints:
     {
       url:
         env.NODE_ENV === "production"
-          ? "https://api.zvest.com"
+          ? "https://zvest-loyalty-backend.onrender.com"
           : "http://localhost:3000",
       description: env.NODE_ENV === "production" ? "Production" : "Development",
     },

@@ -68,7 +68,7 @@ QR codes follow the format \`PLT_{transaction_id}\` and are single-use only.
 
 **Example Usage:**
 \`\`\`bash
-curl -X POST https://api.zvest.com/api/app/scan-qr \\
+curl -X POST https://zvest-loyalty-backend.onrender.com/api/app/scan-qr \\
   -H "Content-Type: application/json" \\
   -d '{
     "qr_code_data": "PLT_456e7890-e89b-12d3-a456-426614174111",

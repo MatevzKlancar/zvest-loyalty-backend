@@ -425,7 +425,7 @@ The generated QR code follows the format \`PLT_{transaction_id}\` and is designe
 
 **Example Usage:**
 \`\`\`bash
-curl -X POST https://api.zvest.com/api/pos/transactions \\
+curl -X POST https://zvest-loyalty-backend.onrender.com/api/pos/transactions \\
   -H "Content-Type: application/json" \\
   -H "X-API-Key: your-api-key" \\
   -d '{

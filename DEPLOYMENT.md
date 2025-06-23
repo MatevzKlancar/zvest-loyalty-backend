@@ -5,7 +5,7 @@ This guide covers deploying the Zvest POS Integration Backend to production.
 ## Prerequisites
 
 1. **Supabase Project**: Create a new project at [supabase.com](https://supabase.com)
-2. **Domain**: A domain for your API (e.g., `api.zvest.com`)
+2. **Domain**: A domain for your API (e.g., `zvest-loyalty-backend.onrender.com`)
 3. **SSL Certificate**: Ensure HTTPS is configured
 
 ## Database Setup
@@ -171,10 +171,11 @@ LOG_LEVEL=info
    ```
 
 3. **Configure Nginx** (if using reverse proxy):
+
    ```nginx
    server {
        listen 80;
-       server_name api.zvest.com;
+       server_name zvest-loyalty-backend.onrender.com;
 
        location / {
            proxy_pass http://localhost:3000;
@@ -206,10 +207,10 @@ INSERT INTO pos_providers (name, description, api_key) VALUES
 
 ```bash
 # Health check
-curl https://api.zvest.com/health
+curl https://zvest-loyalty-backend.onrender.com/health
 
 # Test POS integration
-curl -X GET https://api.zvest.com/api/pos/shops \
+curl -X GET https://zvest-loyalty-backend.onrender.com/api/pos/shops \
   -H "x-api-key: your-production-api-key"
 ```
 
