@@ -73,7 +73,9 @@ export async function authenticatePOSProvider(
       name: dbProvider.name,
     });
 
-    logger.info(`Authenticated POS provider: ${provider.name}`);
+    logger.info(
+      `Authenticated POS provider: ${provider.name} (ID: ${dbProvider.id})`
+    );
     await next();
   } catch (error) {
     logger.error("Error during authentication:", error);

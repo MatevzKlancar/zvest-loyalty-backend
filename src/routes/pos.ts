@@ -124,6 +124,10 @@ pos.openapi(getShopsRoute, async (c) => {
   try {
     const posProvider = c.get("posProvider");
 
+    logger.info(
+      `Querying shops for POS provider ID: ${posProvider.id} (${posProvider.name})`
+    );
+
     // Get shops that belong to this POS provider
     const { data: shops, error } = await supabase
       .from("shops")
@@ -136,11 +140,11 @@ pos.openapi(getShopsRoute, async (c) => {
         type,
         status,
         pos_synced_at,
-        created_at
+        created_at,
+        pos_provider_id
       `
       )
       .eq("pos_provider_id", posProvider.id)
-      .eq("status", "active")
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -300,18 +304,17 @@ pos.openapi(syncArticlesRoute, async (c) => {
     const { articles } = c.req.valid("json");
     const posProvider = c.get("posProvider");
 
-    // Verify shop belongs to POS provider and is active
+    // Verify shop belongs to POS provider (allow pending and active shops)
     const { data: shop, error: shopError } = await supabase
       .from("shops")
       .select("id, status")
       .eq("id", shop_id)
       .eq("pos_provider_id", posProvider.id)
-      .eq("status", "active")
       .single();
 
     if (shopError || !shop) {
       return c.json(
-        standardResponse(404, "Shop not found, inactive, or access denied"),
+        standardResponse(404, "Shop not found or access denied"),
         404
       );
     }
