@@ -61,7 +61,6 @@ CREATE TABLE IF NOT EXISTS articles (
     type VARCHAR,
     tax_type VARCHAR,
     tax_rate DECIMAL(5,2) DEFAULT 0,
-    is_coupon_eligible BOOLEAN DEFAULT true,
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),

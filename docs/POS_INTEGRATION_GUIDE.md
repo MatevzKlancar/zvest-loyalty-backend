@@ -109,7 +109,6 @@ x-api-key: your-api-key
       "description": "Coffee with steamed milk foam",
       "category": "beverages",
       "type": "coffee",
-      "is_coupon_eligible": true,
       "promotional_price": {
         "name": "Morning Special",
         "price": 3.00,
@@ -126,7 +125,6 @@ x-api-key: your-api-key
       "description": "Local craft beer",
             "category": "alcohol",
       "type": "beverage",
-      "is_coupon_eligible": false,
       "promotional_price": {
         "name": "Weekend Premium",
         "price": 6.00,
@@ -144,7 +142,6 @@ x-api-key: your-api-key
 - **Day-of-Week Pricing**: Weekend vs weekday pricing
 - **Date Range Pricing**: Seasonal specials with start/end dates
 - **Simple Logic**: Only one promotional price per article (promotional always beats base price)
-- **Coupon Eligibility**: Control which items can use coupons
 
 #### Get Current Pricing:
 

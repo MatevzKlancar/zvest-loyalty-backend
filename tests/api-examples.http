@@ -65,7 +65,6 @@ Content-Type: application/json
       "description": "Strong Italian coffee",
       "category": "beverages",
       "type": "coffee",
-      "is_coupon_eligible": true,
       "promotional_price": {
         "name": "Morning Special",
         "price": 1.00,
@@ -90,7 +89,6 @@ Content-Type: application/json
       "description": "Local craft beer",
       "category": "alcohol",
       "type": "beverage",
-      "is_coupon_eligible": false,
       "promotional_price": {
         "name": "Weekend Premium",
         "price": 6.00,

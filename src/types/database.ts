@@ -86,7 +86,6 @@ export interface Database {
           type: string | null;
           tax_type: string | null;
           tax_rate: number;
-          is_coupon_eligible: boolean;
           is_active: boolean;
           created_at: string;
           updated_at: string;
@@ -102,7 +101,6 @@ export interface Database {
           type?: string | null;
           tax_type?: string | null;
           tax_rate?: number;
-          is_coupon_eligible?: boolean;
           is_active?: boolean;
           created_at?: string;
           updated_at?: string;
@@ -118,7 +116,6 @@ export interface Database {
           type?: string | null;
           tax_type?: string | null;
           tax_rate?: number;
-          is_coupon_eligible?: boolean;
           is_active?: boolean;
           created_at?: string;
           updated_at?: string;

@@ -27,7 +27,6 @@ const syncArticlesSchema = z.object({
       type: z.string().optional(),
       tax_type: z.string().optional(),
       tax_rate: z.number().optional(),
-      is_coupon_eligible: z.boolean().optional().default(true),
       // Optional promotional pricing (only one allowed)
       promotional_price: z
         .object({
@@ -338,7 +337,6 @@ pos.openapi(syncArticlesRoute, async (c) => {
         type: article.type || null,
         tax_type: article.tax_type || null,
         tax_rate: article.tax_rate || 0,
-        is_coupon_eligible: article.is_coupon_eligible ?? true,
       }));
 
       const { data: insertedArticles, error: insertError } = await supabase
