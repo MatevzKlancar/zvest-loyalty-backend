@@ -28,23 +28,19 @@ const syncArticlesSchema = z.object({
       tax_type: z.string().optional(),
       tax_rate: z.number().optional(),
       is_coupon_eligible: z.boolean().optional().default(true),
-      // Time-based pricing rules (optional)
-      pricing_rules: z
-        .array(
-          z.object({
-            name: z.string().optional(), // e.g., "Happy Hour", "Morning Special"
-            price: z.number().min(0),
-            start_time: z.string().optional(), // "08:00" format
-            end_time: z.string().optional(), // "10:00" format
-            start_date: z.string().optional(), // "2024-01-01" format
-            end_date: z.string().optional(), // "2024-12-31" format
-            days_of_week: z.array(z.number().min(1).max(7)).optional(), // [1,2,3,4,5] for Mon-Fri
-            priority: z.number().optional().default(0),
-            description: z.string().optional(),
-          })
-        )
-        .optional()
-        .default([]),
+      // Optional promotional pricing (only one allowed)
+      promotional_price: z
+        .object({
+          name: z.string().optional(), // e.g., "Happy Hour", "Morning Special"
+          price: z.number().min(0),
+          start_time: z.string().optional(), // "08:00" format
+          end_time: z.string().optional(), // "10:00" format
+          start_date: z.string().optional(), // "2024-01-01" format
+          end_date: z.string().optional(), // "2024-12-31" format
+          days_of_week: z.array(z.number().min(1).max(7)).optional(), // [1,2,3,4,5] for Mon-Fri
+          description: z.string().optional(),
+        })
+        .optional(),
     })
   ),
 });
@@ -355,43 +351,41 @@ pos.openapi(syncArticlesRoute, async (c) => {
         return c.json(standardResponse(500, "Failed to sync articles"), 500);
       }
 
-      // Insert pricing rules for articles that have them
+      // Insert promotional prices for articles that have them
       const pricingRuleInserts: any[] = [];
       for (const article of articles) {
-        if (article.pricing_rules && article.pricing_rules.length > 0) {
+        if (article.promotional_price) {
           const articleId = insertedArticles.find(
             (a) => a.pos_article_id === article.pos_article_id
           )?.id;
 
           if (articleId) {
-            for (const rule of article.pricing_rules) {
-              pricingRuleInserts.push({
-                article_id: articleId,
-                name: rule.name || null,
-                price: rule.price,
-                start_time: rule.start_time || null,
-                end_time: rule.end_time || null,
-                start_date: rule.start_date || null,
-                end_date: rule.end_date || null,
-                days_of_week: rule.days_of_week || null,
-                priority: rule.priority || 0,
-                description: rule.description || null,
-              });
-            }
+            pricingRuleInserts.push({
+              article_id: articleId,
+              name: article.promotional_price.name || null,
+              price: article.promotional_price.price,
+              start_time: article.promotional_price.start_time || null,
+              end_time: article.promotional_price.end_time || null,
+              start_date: article.promotional_price.start_date || null,
+              end_date: article.promotional_price.end_date || null,
+              days_of_week: article.promotional_price.days_of_week || null,
+              priority: 1, // Always 1 for promotional prices
+              description: article.promotional_price.description || null,
+            });
           }
         }
       }
 
-      // Insert pricing rules if any exist
+      // Insert promotional prices if any exist
       if (pricingRuleInserts.length > 0) {
         const { error: pricingError } = await supabase
           .from("article_pricing")
           .insert(pricingRuleInserts);
 
         if (pricingError) {
-          logger.error("Failed to insert pricing rules:", pricingError);
+          logger.error("Failed to insert promotional prices:", pricingError);
           // Don't fail the entire sync, just log the error
-          logger.warn("Continuing sync without pricing rules");
+          logger.warn("Continuing sync without promotional pricing");
         }
       }
     }
@@ -732,7 +726,7 @@ const getCurrentPricingRoute = createRoute({
                   name: z.string(),
                   base_price: z.number(),
                   current_price: z.number(),
-                  active_pricing_rule: z.string().nullable(),
+                  active_promotional_price: z.string().nullable(),
                 })
               ),
             }),

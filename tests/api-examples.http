@@ -66,26 +66,14 @@ Content-Type: application/json
       "category": "beverages",
       "type": "coffee",
       "is_coupon_eligible": true,
-      "pricing_rules": [
-        {
-          "name": "Morning Special",
-          "price": 1.00,
-          "start_time": "08:00",
-          "end_time": "10:00",
-          "days_of_week": [1,2,3,4,5],
-          "priority": 10,
-          "description": "Weekday morning discount"
-        },
-        {
-          "name": "Happy Hour",
-          "price": 2.00,
-          "start_time": "16:00", 
-          "end_time": "18:00",
-          "days_of_week": [1,2,3,4,5],
-          "priority": 5,
-          "description": "Afternoon special"
-        }
-      ]
+      "promotional_price": {
+        "name": "Morning Special",
+        "price": 1.00,
+        "start_time": "08:00",
+        "end_time": "10:00",
+        "days_of_week": [1,2,3,4,5],
+        "description": "Weekday morning discount"
+      }
     },
     {
       "pos_article_id": "art-002",
@@ -103,15 +91,12 @@ Content-Type: application/json
       "category": "alcohol",
       "type": "beverage",
       "is_coupon_eligible": false,
-      "pricing_rules": [
-        {
-          "name": "Weekend Premium",
-          "price": 6.00,
-          "days_of_week": [6,7],
-          "priority": 1,
-          "description": "Weekend premium pricing"
-        }
-      ]
+      "promotional_price": {
+        "name": "Weekend Premium",
+        "price": 6.00,
+        "days_of_week": [6,7],
+        "description": "Weekend premium pricing"
+      }
     }
   ]
 }

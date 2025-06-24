@@ -286,7 +286,8 @@ BEGIN
     -- Adjust to 1=Monday, 7=Sunday format
     check_dow := CASE WHEN check_dow = 0 THEN 7 ELSE check_dow END;
     
-    -- Find matching pricing rule with highest priority
+    -- Check if there's an active promotional price
+    -- If promotional price is active, it always takes precedence over base price
     SELECT ap.price INTO current_price
     FROM article_pricing ap
     WHERE ap.article_id = p_article_id
@@ -306,8 +307,7 @@ BEGIN
         ap.days_of_week IS NULL OR
         check_dow = ANY(ap.days_of_week)
     )
-    ORDER BY ap.priority DESC, ap.created_at DESC
-    LIMIT 1;
+    LIMIT 1; -- Only one promotional price should exist per article
     
     -- Return pricing rule price if found, otherwise base price
     RETURN COALESCE(current_price, base_price);
@@ -352,9 +352,8 @@ BEGIN
                 ap.days_of_week IS NULL OR
                 (CASE WHEN EXTRACT(DOW FROM p_check_time) = 0 THEN 7 ELSE EXTRACT(DOW FROM p_check_time) END) = ANY(ap.days_of_week)
             )
-            ORDER BY ap.priority DESC, ap.created_at DESC
-            LIMIT 1
-        ) as active_pricing_rule
+            LIMIT 1 -- Only one promotional price per article
+        ) as active_promotional_price
     FROM articles a
     WHERE a.shop_id = p_shop_id
     AND a.is_active = true

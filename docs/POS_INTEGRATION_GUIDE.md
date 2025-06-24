@@ -110,55 +110,40 @@ x-api-key: your-api-key
       "category": "beverages",
       "type": "coffee",
       "is_coupon_eligible": true,
-      "pricing_rules": [
-        {
-          "name": "Morning Special",
-          "price": 3.00,
-          "start_time": "08:00",
-          "end_time": "10:00",
-          "days_of_week": [1,2,3,4,5],
-          "priority": 10,
-          "description": "Weekday morning discount"
-        },
-        {
-          "name": "Happy Hour",
-          "price": 3.50,
-          "start_time": "16:00",
-          "end_time": "18:00",
-          "days_of_week": [1,2,3,4,5],
-          "priority": 5,
-          "description": "Afternoon special"
-        }
-      ]
+      "promotional_price": {
+        "name": "Morning Special",
+        "price": 3.00,
+        "start_time": "08:00",
+        "end_time": "10:00",
+        "days_of_week": [1,2,3,4,5],
+        "description": "Weekday morning discount"
+      }
     },
     {
       "pos_article_id": "art_002",
       "name": "Beer",
       "base_price": 5.00,
       "description": "Local craft beer",
-      "category": "alcohol",
+            "category": "alcohol",
       "type": "beverage",
       "is_coupon_eligible": false,
-      "pricing_rules": [
-        {
-          "name": "Weekend Premium",
-          "price": 6.00,
-          "days_of_week": [6,7],
-          "priority": 1,
-          "description": "Weekend premium pricing"
-        }
-      ]
+      "promotional_price": {
+        "name": "Weekend Premium",
+        "price": 6.00,
+        "days_of_week": [6,7],
+        "description": "Weekend premium pricing"
+      }
     }
   ]
 }
 ```
 
-#### Time-Based Pricing Features:
+#### Promotional Pricing Features:
 
-- **Happy Hour Pricing**: Different prices for specific time ranges
+- **Time-Based Pricing**: Different prices for specific time ranges (e.g., happy hour)
 - **Day-of-Week Pricing**: Weekend vs weekday pricing
 - **Date Range Pricing**: Seasonal specials with start/end dates
-- **Priority System**: Higher priority rules override lower priority ones
+- **Simple Logic**: Only one promotional price per article (promotional always beats base price)
 - **Coupon Eligibility**: Control which items can use coupons
 
 #### Get Current Pricing:

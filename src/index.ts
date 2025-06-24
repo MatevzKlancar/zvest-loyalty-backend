@@ -186,15 +186,15 @@ app.get("/", (c) => {
       "3_get_shops": "GET /api/pos/shops",
       "4_enable_shop": "POST /api/pos/shops/{id}/enable",
       "5_sync_menu":
-        "POST /api/pos/shops/{id}/articles (with time-based pricing)",
+        "POST /api/pos/shops/{id}/articles (with promotional pricing)",
       "6_create_transaction": "POST /api/pos/transactions",
       "7_get_qr_data": "GET /api/pos/transactions/{id}/qr-data",
       "8_scan_qr": "POST /api/app/scan-qr",
     },
     pricing_features: {
       current_pricing: "GET /api/pos/shops/{id}/current-pricing",
-      time_based_rules:
-        "Support for happy hour, morning specials, weekend pricing",
+      promotional_pricing:
+        "Simple promotional pricing (one promotion per article)",
       coupon_eligibility: "Per-article coupon eligibility flags",
     },
     admin_helpers: {
