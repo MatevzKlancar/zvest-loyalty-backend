@@ -27,18 +27,20 @@ const syncArticlesSchema = z.object({
       type: z.string().optional(),
       tax_type: z.string().optional(),
       tax_rate: z.number().optional(),
-      // Optional promotional pricing (only one allowed)
-      promotional_price: z
-        .object({
-          name: z.string().optional(), // e.g., "Happy Hour", "Morning Special"
-          price: z.number().min(0),
-          start_time: z.string().optional(), // "08:00" format
-          end_time: z.string().optional(), // "10:00" format
-          start_date: z.string().optional(), // "2024-01-01" format
-          end_date: z.string().optional(), // "2024-12-31" format
-          days_of_week: z.array(z.number().min(1).max(7)).optional(), // [1,2,3,4,5] for Mon-Fri
-          description: z.string().optional(),
-        })
+      // Optional promotional pricing (multiple allowed)
+      promotional_prices: z
+        .array(
+          z.object({
+            name: z.string().optional(), // e.g., "Happy Hour", "Morning Special"
+            price: z.number().min(0),
+            start_time: z.string().optional(), // "08:00" format
+            end_time: z.string().optional(), // "10:00" format
+            start_date: z.string().optional(), // "2024-01-01" format
+            end_date: z.string().optional(), // "2024-12-31" format
+            days_of_week: z.array(z.number().min(1).max(7)).optional(), // [1,2,3,4,5] for Mon-Fri
+            description: z.string().optional(),
+          })
+        )
         .optional(),
     })
   ),
@@ -352,24 +354,30 @@ pos.openapi(syncArticlesRoute, async (c) => {
       // Insert promotional prices for articles that have them
       const pricingRuleInserts: any[] = [];
       for (const article of articles) {
-        if (article.promotional_price) {
+        if (
+          article.promotional_prices &&
+          article.promotional_prices.length > 0
+        ) {
           const articleId = insertedArticles.find(
             (a) => a.pos_article_id === article.pos_article_id
           )?.id;
 
           if (articleId) {
-            pricingRuleInserts.push({
-              article_id: articleId,
-              name: article.promotional_price.name || null,
-              price: article.promotional_price.price,
-              start_time: article.promotional_price.start_time || null,
-              end_time: article.promotional_price.end_time || null,
-              start_date: article.promotional_price.start_date || null,
-              end_date: article.promotional_price.end_date || null,
-              days_of_week: article.promotional_price.days_of_week || null,
-              priority: 1, // Always 1 for promotional prices
-              description: article.promotional_price.description || null,
-            });
+            // Insert all promotional prices for this article
+            for (const promo of article.promotional_prices) {
+              pricingRuleInserts.push({
+                article_id: articleId,
+                name: promo.name || null,
+                price: promo.price,
+                start_time: promo.start_time || null,
+                end_time: promo.end_time || null,
+                start_date: promo.start_date || null,
+                end_date: promo.end_date || null,
+                days_of_week: promo.days_of_week || null,
+                priority: 1, // Default priority for all promotional prices
+                description: promo.description || null,
+              });
+            }
           }
         }
       }

@@ -109,14 +109,24 @@ x-api-key: your-api-key
       "description": "Coffee with steamed milk foam",
       "category": "beverages",
       "type": "coffee",
-      "promotional_price": {
-        "name": "Morning Special",
-        "price": 3.00,
-        "start_time": "08:00",
-        "end_time": "10:00",
-        "days_of_week": [1,2,3,4,5],
-        "description": "Weekday morning discount"
-      }
+      "promotional_prices": [
+        {
+          "name": "Morning Special",
+          "price": 3.00,
+          "start_time": "08:00",
+          "end_time": "10:00",
+          "days_of_week": [1,2,3,4,5],
+          "description": "Weekday morning discount"
+        },
+        {
+          "name": "Evening Special",
+          "price": 3.50,
+          "start_time": "21:00",
+          "end_time": "22:00",
+          "days_of_week": [1,2,3,4,5],
+          "description": "Evening discount"
+        }
+      ]
     },
     {
       "pos_article_id": "art_002",
@@ -125,12 +135,14 @@ x-api-key: your-api-key
       "description": "Local craft beer",
             "category": "alcohol",
       "type": "beverage",
-      "promotional_price": {
-        "name": "Weekend Premium",
-        "price": 6.00,
-        "days_of_week": [6,7],
-        "description": "Weekend premium pricing"
-      }
+      "promotional_prices": [
+        {
+          "name": "Weekend Premium",
+          "price": 6.00,
+          "days_of_week": [6,7],
+          "description": "Weekend premium pricing"
+        }
+      ]
     }
   ]
 }
@@ -138,10 +150,10 @@ x-api-key: your-api-key
 
 #### Promotional Pricing Features:
 
-- **Time-Based Pricing**: Different prices for specific time ranges (e.g., happy hour)
+- **Time-Based Pricing**: Different prices for specific time ranges (e.g., multiple happy hours)
 - **Day-of-Week Pricing**: Weekend vs weekday pricing
 - **Date Range Pricing**: Seasonal specials with start/end dates
-- **Simple Logic**: Only one promotional price per article (promotional always beats base price)
+- **Multiple Promotions**: Support for multiple promotional prices per article (e.g., morning and evening specials)
 
 #### Get Current Pricing:
 

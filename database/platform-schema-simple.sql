@@ -285,9 +285,9 @@ BEGIN
     -- Adjust to 1=Monday, 7=Sunday format
     check_dow := CASE WHEN check_dow = 0 THEN 7 ELSE check_dow END;
     
-    -- Check if there's an active promotional price
-    -- If promotional price is active, it always takes precedence over base price
-    SELECT ap.price INTO current_price
+    -- Check if there are active promotional prices
+    -- If multiple promotional prices are active, take the lowest (best for customer)
+    SELECT MIN(ap.price) INTO current_price
     FROM article_pricing ap
     WHERE ap.article_id = p_article_id
     AND ap.is_active = true
@@ -305,8 +305,7 @@ BEGIN
         -- Day of week match (if specified)
         ap.days_of_week IS NULL OR
         check_dow = ANY(ap.days_of_week)
-    )
-    LIMIT 1; -- Only one promotional price should exist per article
+    );
     
     -- Return pricing rule price if found, otherwise base price
     RETURN COALESCE(current_price, base_price);
@@ -351,7 +350,25 @@ BEGIN
                 ap.days_of_week IS NULL OR
                 (CASE WHEN EXTRACT(DOW FROM p_check_time) = 0 THEN 7 ELSE EXTRACT(DOW FROM p_check_time) END) = ANY(ap.days_of_week)
             )
-            LIMIT 1 -- Only one promotional price per article
+            AND ap.price = (
+                SELECT MIN(ap2.price)
+                FROM article_pricing ap2
+                WHERE ap2.article_id = a.id
+                AND ap2.is_active = true
+                AND (
+                    (ap2.start_time IS NULL OR ap2.end_time IS NULL) OR
+                    (ap2.start_time <= p_check_time::TIME AND ap2.end_time >= p_check_time::TIME)
+                )
+                AND (
+                    (ap2.start_date IS NULL OR ap2.end_date IS NULL) OR
+                    (ap2.start_date <= p_check_time::DATE AND ap2.end_date >= p_check_time::DATE)
+                )
+                AND (
+                    ap2.days_of_week IS NULL OR
+                    (CASE WHEN EXTRACT(DOW FROM p_check_time) = 0 THEN 7 ELSE EXTRACT(DOW FROM p_check_time) END) = ANY(ap2.days_of_week)
+                )
+            )
+            LIMIT 1 -- Get the name of the promotional price with the lowest price
         ) as active_promotional_price
     FROM articles a
     WHERE a.shop_id = p_shop_id
