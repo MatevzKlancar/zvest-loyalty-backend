@@ -3,30 +3,25 @@ import { z } from "zod";
 import { supabase } from "../config/database";
 import { logger } from "../config/logger";
 import { standardResponse } from "../middleware/error";
+import {
+  authenticateUser,
+  requireAdmin,
+  getUserPermissions,
+  UnifiedAuthContext,
+} from "../middleware/unified-auth";
+import crypto from "crypto";
 
-const admin = new OpenAPIHono();
+const admin = new OpenAPIHono<UnifiedAuthContext>();
 
-// Schemas
-const createCustomerSchema = z.object({
-  name: z.string().min(1, "Customer name is required"),
-  type: z.enum(["platform", "enterprise"]).default("platform"),
-  subscription_tier: z
-    .enum(["basic", "premium", "enterprise"])
-    .default("basic"),
-  settings: z.record(z.any()).optional(),
-});
+// Apply unified auth middleware to all admin routes
+admin.use("*", authenticateUser);
+admin.use("*", requireAdmin);
 
-const createShopSchema = z.object({
-  customer_id: z.string().uuid("Invalid customer ID"),
-  pos_provider_id: z.string().uuid("Invalid POS provider ID"),
-  name: z.string().min(1, "Shop name is required"),
-  description: z.string().optional(),
-  address: z.string().optional(),
-  phone: z.string().optional(),
-  email: z.string().email().optional(),
-  type: z.string().optional(), // coffee, restaurant, retail, etc.
-});
+// ===========================
+// CLEAN ADMIN API - ONLY 5 ESSENTIAL ENDPOINTS
+// ===========================
 
+// SCHEMAS
 const customerResponseSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
@@ -36,62 +31,94 @@ const customerResponseSchema = z.object({
   created_at: z.string(),
 });
 
-const shopResponseSchema = z.object({
-  id: z.string().uuid(),
-  customer_id: z.string().uuid(),
-  pos_provider_id: z.string().uuid(),
-  name: z.string(),
-  description: z.string().nullable(),
-  address: z.string().nullable(),
-  phone: z.string().nullable(),
-  email: z.string().nullable(),
-  type: z.string().nullable(),
-  status: z.string(),
-  created_at: z.string(),
+const completeOnboardingSchema = z.object({
+  invitation_token: z.string().min(1, "Invitation token required"),
+  password: z.string().min(8, "Password must be at least 8 characters"),
+  shop_details: z
+    .object({
+      description: z.string().optional(),
+      address: z.string().optional(),
+      phone: z.string().optional(),
+      website: z.string().url().optional(),
+      opening_hours: z.string().optional(),
+      loyalty_type: z.enum(["points", "coupons"]).default("points"),
+    })
+    .optional(),
 });
 
-// Create B2B Customer
-const createCustomerRoute = createRoute({
+// Primary onboarding schema - only 7 required fields
+const simpleB2bOnboardingSchema = z.object({
+  business_name: z.string().min(1, "Business name is required"),
+  contact_email: z.string().email("Valid email is required"),
+  contact_phone: z.string().optional(),
+  owner_email: z.string().email("Valid owner email is required"),
+  owner_first_name: z.string().min(1, "Owner first name is required"),
+  owner_last_name: z.string().min(1, "Owner last name is required"),
+  pos_provider_name: z.string().min(1, "POS provider is required"),
+  // Optional fields with smart defaults
+  customer_type: z.enum(["platform", "enterprise"]).default("platform"),
+  subscription_tier: z
+    .enum(["basic", "premium", "enterprise"])
+    .default("basic"),
+  loyalty_type: z.enum(["points", "coupons"]).default("points"),
+});
+
+// ===========================
+// 1. SIMPLIFIED B2B ONBOARDING (PRIMARY ENDPOINT)
+// ===========================
+
+const simpleB2bOnboardingRoute = createRoute({
   method: "post",
-  path: "/customers",
-  summary: "Create new B2B customer",
+  path: "/onboard-simple",
+  summary: "🚀 Simple B2B onboarding (RECOMMENDED)",
   description: `
-Creates a new B2B customer account for platform integration. This is the first step in onboarding a business to the loyalty platform.
+**The primary endpoint for B2B customer onboarding.**
 
-**Customer Types:**
-- \`platform\`: Uses shared database instance (recommended for smaller businesses)
-- \`enterprise\`: Uses dedicated database instance (for large-scale operations)
+Creates customer, shop, and invitation in one API call with smart defaults.
+Requires only 7 fields instead of 15+. Perfect for sales teams and admin dashboards.
 
-**Subscription Tiers:**
-- \`basic\`: Standard loyalty features
-- \`premium\`: Advanced analytics and customization
-- \`enterprise\`: Full white-label solution
+**Smart Defaults Applied:**
+- \`customer_type\`: "platform" 
+- \`subscription_tier\`: "basic"
+- \`loyalty_type\`: "points"
+- \`shop_name\`: Same as business_name
+- \`shop_status\`: "pending_setup"
 
-**Example Usage:**
+**Authentication:** Requires admin JWT token in Authorization header.
+
+**Example:**
 \`\`\`bash
-curl -X POST https://zvest-loyalty-backend.onrender.com/api/admin/customers \\
+curl -X POST /api/admin/onboard-simple \\
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "name": "Coffee House Chain",
-    "type": "platform",
-    "subscription_tier": "premium"
+    "business_name": "Coffee Shop",
+    "contact_email": "contact@coffeeshop.com",
+    "owner_email": "owner@coffeeshop.com",
+    "owner_first_name": "John",
+    "owner_last_name": "Smith",
+    "pos_provider_name": "Square"
   }'
 \`\`\`
   `,
   tags: ["Admin"],
+  security: [{ BearerAuth: [] }],
   request: {
     body: {
       content: {
         "application/json": {
-          schema: createCustomerSchema.openapi({
+          schema: simpleB2bOnboardingSchema.openapi({
             example: {
-              name: "Coffee House Chain",
-              type: "platform",
-              subscription_tier: "premium",
-              settings: {
-                branding_color: "#8B4513",
-                custom_domain: "loyalty.coffeehouse.com",
-              },
+              business_name: "Coffee Shop Downtown",
+              contact_email: "contact@coffeeshop.com",
+              contact_phone: "+1-555-0100",
+              owner_email: "owner@coffeeshop.com",
+              owner_first_name: "John",
+              owner_last_name: "Smith",
+              pos_provider_name: "Square",
+              customer_type: "platform",
+              subscription_tier: "basic",
+              loyalty_type: "points",
             },
           }),
         },
@@ -100,127 +127,55 @@ curl -X POST https://zvest-loyalty-backend.onrender.com/api/admin/customers \\
   },
   responses: {
     201: {
-      description: "Customer created successfully",
+      description: "B2B onboarding completed successfully",
       content: {
         "application/json": {
           schema: z
             .object({
               success: z.boolean(),
               message: z.string(),
-              data: customerResponseSchema,
+              data: z.object({
+                customer_id: z.string().uuid(),
+                shop_id: z.string().uuid(),
+                invitation_id: z.string().uuid(),
+                invitation_token: z.string(),
+                setup_url: z.string(),
+              }),
             })
             .openapi({
               example: {
                 success: true,
-                message: "Customer created successfully",
+                message: "B2B onboarding completed successfully",
                 data: {
-                  id: "123e4567-e89b-12d3-a456-426614174000",
-                  name: "Coffee House Chain",
-                  type: "platform",
-                  subscription_tier: "premium",
-                  is_active: true,
-                  created_at: "2024-01-15T10:30:00Z",
+                  customer_id: "123e4567-e89b-12d3-a456-426614174000",
+                  shop_id: "456e7890-e89b-12d3-a456-426614174001",
+                  invitation_id: "789e0123-e89b-12d3-a456-426614174002",
+                  invitation_token: "abc123def456...",
+                  setup_url: "http://localhost:3000/setup/abc123def456...",
                 },
               },
             }),
         },
       },
     },
-    400: {
-      description: "Invalid request parameters",
-      content: {
-        "application/json": {
-          schema: z
-            .object({
-              success: z.boolean().default(false),
-              message: z.string(),
-            })
-            .openapi({
-              example: {
-                success: false,
-                message: "Customer name is required",
-              },
-            }),
-        },
-      },
-    },
-    500: {
-      description: "Server error processing the request",
-      content: {
-        "application/json": {
-          schema: z
-            .object({
-              success: z.boolean().default(false),
-              message: z.string(),
-            })
-            .openapi({
-              example: {
-                success: false,
-                message: "Failed to create customer",
-              },
-            }),
-        },
-      },
-    },
-  },
-});
-
-admin.openapi(createCustomerRoute, async (c) => {
-  try {
-    const customerData = c.req.valid("json");
-
-    const { data: customer, error } = await supabase
-      .from("customers")
-      .insert({
-        name: customerData.name,
-        type: customerData.type,
-        subscription_tier: customerData.subscription_tier,
-        settings: customerData.settings || {},
-      })
-      .select()
-      .single();
-
-    if (error) {
-      logger.error("Failed to create customer:", error);
-      return c.json(standardResponse(500, "Failed to create customer"), 500);
-    }
-
-    logger.info(`Customer created successfully: ${customer.id}`);
-    return c.json(
-      standardResponse(201, "Customer created successfully", customer),
-      201
-    );
-  } catch (error) {
-    logger.error("Error creating customer:", error);
-    return c.json(standardResponse(500, "Internal server error"), 500);
-  }
-});
-
-// Create Shop (updated - customer_id in body, not URL)
-const createShopRoute = createRoute({
-  method: "post",
-  path: "/shops",
-  summary: "Create shop for customer",
-  description: "Creates a new shop for an existing B2B customer",
-  tags: ["Admin"],
-  request: {
-    body: {
-      content: {
-        "application/json": {
-          schema: createShopSchema,
-        },
-      },
-    },
-  },
-  responses: {
-    201: {
-      description: "Shop created successfully",
+    401: {
+      description: "Authentication required",
       content: {
         "application/json": {
           schema: z.object({
-            success: z.boolean(),
-            message: z.string(),
-            data: shopResponseSchema,
+            success: z.boolean().default(false),
+            message: z.string().default("Admin authentication required"),
+          }),
+        },
+      },
+    },
+    403: {
+      description: "Admin access required",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean().default(false),
+            message: z.string().default("Admin access required"),
           }),
         },
       },
@@ -228,84 +183,147 @@ const createShopRoute = createRoute({
   },
 });
 
-admin.openapi(createShopRoute, async (c) => {
+admin.openapi(simpleB2bOnboardingRoute, async (c) => {
   try {
-    const shopData = c.req.valid("json");
+    const adminUser = c.get("adminUser");
+    const data = c.req.valid("json");
 
-    // Verify customer exists and is active
+    // 1. Find or create POS provider
+    let { data: posProvider, error: posProviderError } = await supabase
+      .from("pos_providers")
+      .select("id")
+      .eq("name", data.pos_provider_name)
+      .single();
+
+    if (posProviderError || !posProvider) {
+      const { data: newPosProvider, error: createPosError } = await supabase
+        .from("pos_providers")
+        .insert({
+          name: data.pos_provider_name,
+          description: `Auto-created for ${data.business_name}`,
+        })
+        .select("id")
+        .single();
+
+      if (createPosError) throw createPosError;
+      posProvider = newPosProvider;
+    }
+
+    // 2. Create B2B customer with smart defaults
     const { data: customer, error: customerError } = await supabase
       .from("customers")
-      .select("id, name, is_active")
-      .eq("id", shopData.customer_id)
-      .eq("is_active", true)
-      .single();
-
-    if (customerError || !customer) {
-      return c.json(
-        standardResponse(404, "Customer not found or inactive"),
-        404
-      );
-    }
-
-    // Verify POS provider exists
-    const { data: posProvider, error: providerError } = await supabase
-      .from("pos_providers")
-      .select("id, name")
-      .eq("id", shopData.pos_provider_id)
-      .eq("is_active", true)
-      .single();
-
-    if (providerError || !posProvider) {
-      return c.json(standardResponse(400, "Invalid POS provider"), 400);
-    }
-
-    const { data: shop, error } = await supabase
-      .from("shops")
       .insert({
-        customer_id: shopData.customer_id,
-        pos_provider_id: shopData.pos_provider_id,
-        name: shopData.name,
-        description: shopData.description,
-        address: shopData.address,
-        phone: shopData.phone,
-        email: shopData.email,
-        type: shopData.type,
-        status: "pending", // Will be activated when POS provider enables it
-        approved_by: "admin", // In real app, get from auth context
-        approved_at: new Date().toISOString(),
+        name: data.business_name,
+        type: data.customer_type,
+        subscription_tier: data.subscription_tier,
+        settings: {
+          contact_email: data.contact_email,
+          contact_phone: data.contact_phone,
+          created_via: "simple_onboarding",
+          created_by_admin: adminUser.id,
+        },
       })
       .select()
       .single();
 
-    if (error) {
-      logger.error("Failed to create shop:", error);
-      return c.json(standardResponse(500, "Failed to create shop"), 500);
-    }
+    if (customerError) throw customerError;
 
+    // 3. Create shop with smart defaults
+    const { data: shop, error: shopError } = await supabase
+      .from("shops")
+      .insert({
+        customer_id: customer.id,
+        pos_provider_id: posProvider.id,
+        name: data.business_name, // Use business name as shop name
+        email: data.contact_email,
+        phone: data.contact_phone,
+        loyalty_type: data.loyalty_type,
+        status: "pending_setup",
+        settings: {
+          created_via: "simple_onboarding",
+        },
+      })
+      .select()
+      .single();
+
+    if (shopError) throw shopError;
+
+    // 4. Create invitation token
+    const invitationToken = crypto.randomBytes(32).toString("hex");
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7); // 7 days from now
+
+    const { data: invitation, error: invitationError } = await supabase
+      .from("shop_owner_invitations")
+      .insert({
+        shop_id: shop.id,
+        email: data.owner_email,
+        first_name: data.owner_first_name,
+        last_name: data.owner_last_name,
+        phone: data.contact_phone,
+        invitation_token: invitationToken,
+        expires_at: expiresAt.toISOString(),
+        invited_by_admin: adminUser.id,
+      })
+      .select()
+      .single();
+
+    if (invitationError) throw invitationError;
+
+    // 5. Generate setup URL
+    const setupUrl = `${
+      process.env.FRONTEND_URL || "http://localhost:3001"
+    }/setup/${invitationToken}`;
+
+    // Note: Email sending is disabled for now - admin can copy the setup URL from response
     logger.info(
-      `Shop created successfully: ${shop.id} for customer: ${customer.name} (${shopData.customer_id})`
+      `Simple B2B onboarding completed: ${customer.id} -> ${shop.id}`
     );
+    logger.info(`Setup URL for ${data.owner_email}: ${setupUrl}`);
+
     return c.json(
-      standardResponse(201, "Shop created successfully", {
-        ...shop,
-        customer_name: customer.name,
-        pos_provider_name: posProvider.name,
+      standardResponse(201, "B2B onboarding completed successfully", {
+        customer_id: customer.id,
+        shop_id: shop.id,
+        invitation_id: invitation.id,
+        invitation_token: invitationToken,
+        setup_url: setupUrl,
       }),
       201
     );
   } catch (error) {
-    logger.error("Error creating shop:", error);
-    return c.json(standardResponse(500, "Internal server error"), 500);
+    logger.error("Error in simple B2B onboarding:", error);
+    return c.json(
+      standardResponse(500, "Failed to complete B2B onboarding"),
+      500
+    );
   }
 });
 
-// Get all customers
+// ===========================
+// 2. LIST ALL CUSTOMERS (for admin dashboard)
+// ===========================
+
 const getCustomersRoute = createRoute({
   method: "get",
   path: "/customers",
-  summary: "Get all customers",
-  description: "Retrieves all B2B customers",
+  summary: "📋 List all customers",
+  description: `
+Retrieves all B2B customers for admin dashboard.
+Supports filtering and pagination.
+
+**Authentication:** Requires admin JWT token in Authorization header.
+  `,
   tags: ["Admin"],
+  security: [{ BearerAuth: [] }],
+  request: {
+    query: z.object({
+      limit: z.string().optional(),
+      offset: z.string().optional(),
+      type: z.enum(["platform", "enterprise"]).optional(),
+      search: z.string().optional(),
+    }),
+  },
   responses: {
     200: {
       description: "Customers retrieved successfully",
@@ -315,6 +333,11 @@ const getCustomersRoute = createRoute({
             success: z.boolean(),
             message: z.string(),
             data: z.array(customerResponseSchema),
+            meta: z.object({
+              total: z.number(),
+              limit: z.number(),
+              offset: z.number(),
+            }),
           }),
         },
       },
@@ -324,32 +347,62 @@ const getCustomersRoute = createRoute({
 
 admin.openapi(getCustomersRoute, async (c) => {
   try {
-    const { data: customers, error } = await supabase
+    const { limit = "50", offset = "0", type, search } = c.req.valid("query");
+
+    let query = supabase
       .from("customers")
-      .select("id, name, type, subscription_tier, is_active, created_at")
-      .order("created_at", { ascending: false });
+      .select("id, name, type, subscription_tier, is_active, created_at", {
+        count: "exact",
+      });
+
+    if (type) query = query.eq("type", type);
+    if (search) query = query.ilike("name", `%${search}%`);
+
+    const {
+      data: customers,
+      error,
+      count,
+    } = await query
+      .order("created_at", { ascending: false })
+      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
 
     if (error) {
       logger.error("Failed to fetch customers:", error);
       return c.json(standardResponse(500, "Failed to fetch customers"), 500);
     }
 
-    return c.json(
-      standardResponse(200, "Customers retrieved successfully", customers)
-    );
+    return c.json({
+      success: true,
+      message: "Customers retrieved successfully",
+      data: customers,
+      meta: {
+        total: count || 0,
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+      },
+    });
   } catch (error) {
     logger.error("Error fetching customers:", error);
     return c.json(standardResponse(500, "Internal server error"), 500);
   }
 });
 
-// Get all POS providers (helper for admins)
+// ===========================
+// 3. LIST POS PROVIDERS (for dropdowns)
+// ===========================
+
 const getPosProvidersRoute = createRoute({
   method: "get",
   path: "/pos-providers",
-  summary: "Get all POS providers",
-  description: "Retrieves all available POS providers for shop creation",
+  summary: "🔌 List POS providers",
+  description: `
+Retrieves all available POS providers for admin dropdowns.
+Used when creating shops to select POS integration.
+
+**Authentication:** Requires admin JWT token in Authorization header.
+  `,
   tags: ["Admin"],
+  security: [{ BearerAuth: [] }],
   responses: {
     200: {
       description: "POS providers retrieved successfully",
@@ -398,43 +451,65 @@ admin.openapi(getPosProvidersRoute, async (c) => {
   }
 });
 
-// User-friendly shop creation with customer name
-const createShopByNameSchema = z.object({
-  customer_name: z.string().min(1, "Customer name is required"),
-  pos_provider_name: z.string().min(1, "POS provider name is required"),
-  name: z.string().min(1, "Shop name is required"),
-  description: z.string().optional(),
-  address: z.string().optional(),
-  phone: z.string().optional(),
-  email: z.string().email().optional(),
-  type: z.string().optional(),
-});
+// ===========================
+// 4. COMPLETE SHOP SETUP (used by shop owners - NO AUTH)
+// ===========================
 
-const createShopByNameRoute = createRoute({
+const completeShopSetupRoute = createRoute({
   method: "post",
-  path: "/shops/by-name",
-  summary: "Create shop using customer name",
-  description:
-    "Creates a shop using customer name instead of ID (more user-friendly)",
-  tags: ["Admin"],
+  path: "/complete-shop-setup",
+  summary: "✅ Complete shop owner setup",
+  description: `
+**Public endpoint** used by shop owners to complete their setup process.
+
+Creates Supabase Auth account and activates the shop.
+Shop owners access this via the setup URL sent in invitation email.
+
+**No authentication required** - uses invitation token for security.
+  `,
+  tags: ["Public"],
   request: {
     body: {
       content: {
         "application/json": {
-          schema: createShopByNameSchema,
+          schema: completeOnboardingSchema.openapi({
+            example: {
+              invitation_token: "abc123def456...",
+              password: "SecurePassword123!",
+              shop_details: {
+                description: "Premium coffee and pastries",
+                address: "123 Main Street, Downtown",
+                phone: "+1-555-0125",
+                website: "https://myshop.com",
+                opening_hours: "Mon-Fri: 7:00-19:00, Sat-Sun: 8:00-18:00",
+                loyalty_type: "points",
+              },
+            },
+          }),
         },
       },
     },
   },
   responses: {
-    201: {
-      description: "Shop created successfully",
+    200: {
+      description: "Shop setup completed successfully",
       content: {
         "application/json": {
           schema: z.object({
             success: z.boolean(),
             message: z.string(),
-            data: shopResponseSchema,
+            data: z.object({
+              shop: z.object({
+                id: z.string().uuid(),
+                name: z.string(),
+                status: z.string(),
+              }),
+              user: z.object({
+                id: z.string(),
+                email: z.string(),
+              }),
+              dashboard_url: z.string(),
+            }),
           }),
         },
       },
@@ -442,83 +517,313 @@ const createShopByNameRoute = createRoute({
   },
 });
 
-admin.openapi(createShopByNameRoute, async (c) => {
+// Remove auth for this specific endpoint
+const completeShopSetupHandler = new OpenAPIHono();
+completeShopSetupHandler.openapi(completeShopSetupRoute, async (c) => {
   try {
-    const shopData = c.req.valid("json");
+    const setupData = c.req.valid("json");
 
-    // Find customer by name
-    const { data: customer, error: customerError } = await supabase
-      .from("customers")
-      .select("id, name, is_active")
-      .ilike("name", shopData.customer_name) // Case-insensitive search
-      .eq("is_active", true)
+    // Step 1: Verify invitation token
+    const { data: invitation, error: invitationError } = await supabase
+      .from("shop_owner_invitations")
+      .select(
+        `
+        id, shop_id, email, first_name, last_name, phone, expires_at, status,
+        shops!inner (
+          id, name, customer_id, status, email
+        )
+      `
+      )
+      .eq("invitation_token", setupData.invitation_token)
+      .eq("status", "pending")
       .single();
 
-    if (customerError || !customer) {
+    if (invitationError || !invitation) {
       return c.json(
-        standardResponse(
-          404,
-          `Customer '${shopData.customer_name}' not found or inactive`
-        ),
+        standardResponse(404, "Invalid or expired invitation token"),
         404
       );
     }
 
-    // Find POS provider by name
-    const { data: posProvider, error: providerError } = await supabase
-      .from("pos_providers")
-      .select("id, name")
-      .ilike("name", shopData.pos_provider_name)
-      .eq("is_active", true)
-      .single();
+    // Check if invitation is expired
+    if (new Date(invitation.expires_at) < new Date()) {
+      return c.json(standardResponse(400, "Invitation token has expired"), 400);
+    }
 
-    if (providerError || !posProvider) {
+    // Step 2: Create Supabase Auth user
+    const { data: authUser, error: authError } =
+      await supabase.auth.admin.createUser({
+        email: invitation.email,
+        password: setupData.password,
+        email_confirm: true, // Skip email confirmation for B2B users
+        user_metadata: {
+          first_name: invitation.first_name,
+          last_name: invitation.last_name,
+          phone: invitation.phone,
+          shop_id: invitation.shop_id,
+          role: "shop_owner",
+        },
+      });
+
+    if (authError) {
+      logger.error("Failed to create Supabase Auth user:", authError);
       return c.json(
-        standardResponse(
-          400,
-          `POS provider '${shopData.pos_provider_name}' not found`
-        ),
-        400
+        standardResponse(500, "Failed to create user account"),
+        500
       );
     }
 
-    // Create shop
-    const { data: shop, error } = await supabase
+    // Step 3: Update Shop Details (if provided)
+    let updateData: any = {
+      status: "active", // Activate the shop
+      owner_user_id: authUser.user.id, // Link to Supabase Auth user
+    };
+
+    if (setupData.shop_details) {
+      updateData = { ...updateData, ...setupData.shop_details };
+    }
+
+    const { data: updatedShop, error: shopUpdateError } = await supabase
       .from("shops")
-      .insert({
-        customer_id: customer.id,
-        pos_provider_id: posProvider.id,
-        name: shopData.name,
-        description: shopData.description,
-        address: shopData.address,
-        phone: shopData.phone,
-        email: shopData.email,
-        type: shopData.type,
-        status: "pending",
-        approved_by: "admin",
-        approved_at: new Date().toISOString(),
-      })
+      .update(updateData)
+      .eq("id", invitation.shop_id)
       .select()
       .single();
 
-    if (error) {
-      logger.error("Failed to create shop:", error);
-      return c.json(standardResponse(500, "Failed to create shop"), 500);
+    if (shopUpdateError) {
+      logger.error("Failed to update shop:", shopUpdateError);
+      return c.json(standardResponse(500, "Failed to update shop"), 500);
     }
 
+    // Step 4: Mark invitation as completed
+    await supabase
+      .from("shop_owner_invitations")
+      .update({
+        status: "completed",
+        completed_at: new Date().toISOString(),
+        user_id: authUser.user.id,
+      })
+      .eq("id", invitation.id);
+
+    const dashboardUrl = `${
+      process.env.FRONTEND_URL || "https://your-frontend.com"
+    }/dashboard`;
+
     logger.info(
-      `Shop created successfully: ${shop.id} for customer: ${customer.name}`
+      `Shop setup completed for shop: ${updatedShop.name}, user: ${authUser.user.email}`
     );
     return c.json(
-      standardResponse(201, "Shop created successfully", {
-        ...shop,
-        customer_name: customer.name,
-        pos_provider_name: posProvider.name,
-      }),
-      201
+      standardResponse(200, "Shop setup completed successfully", {
+        shop: {
+          id: updatedShop.id,
+          name: updatedShop.name,
+          status: updatedShop.status,
+        },
+        user: {
+          id: authUser.user.id,
+          email: authUser.user.email,
+        },
+        dashboard_url: dashboardUrl,
+      })
     );
   } catch (error) {
-    logger.error("Error creating shop:", error);
+    logger.error("Error completing shop setup:", error);
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
+// Mount the no-auth handler to admin
+admin.route("", completeShopSetupHandler);
+
+// ===========================
+// 5. GET INVITATION DETAILS (for setup page - NO AUTH)
+// ===========================
+
+const getInvitationRoute = createRoute({
+  method: "get",
+  path: "/invitation/{token}",
+  summary: "📧 Get invitation details",
+  description: `
+**Public endpoint** to get invitation details for the shop setup page.
+
+Shop owners use this to view invitation details before completing setup.
+**No authentication required** - uses invitation token for security.
+  `,
+  tags: ["Public"],
+  request: {
+    params: z.object({
+      token: z.string().min(1, "Token is required"),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Invitation details retrieved successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.object({
+              shop_name: z.string(),
+              customer_name: z.string(),
+              owner_name: z.string(),
+              email: z.string(),
+              expires_at: z.string(),
+              is_expired: z.boolean(),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+// Remove auth for this specific endpoint
+const getInvitationHandler = new OpenAPIHono();
+getInvitationHandler.openapi(getInvitationRoute, async (c) => {
+  try {
+    const { token } = c.req.valid("param");
+
+    const { data: invitation, error } = await supabase
+      .from("shop_owner_invitations")
+      .select("email, first_name, last_name, expires_at, status, shop_id")
+      .eq("invitation_token", token)
+      .eq("status", "pending")
+      .single();
+
+    if (error || !invitation) {
+      return c.json(standardResponse(404, "Invitation not found"), 404);
+    }
+
+    // Get shop and customer details separately to avoid TypeScript issues
+    const { data: shopData, error: shopError } = await supabase
+      .from("shops")
+      .select("name, customer_id")
+      .eq("id", invitation.shop_id)
+      .single();
+
+    if (shopError || !shopData) {
+      return c.json(standardResponse(404, "Shop not found"), 404);
+    }
+
+    const { data: customerData, error: customerError } = await supabase
+      .from("customers")
+      .select("name")
+      .eq("id", shopData.customer_id)
+      .single();
+
+    if (customerError || !customerData) {
+      return c.json(standardResponse(404, "Customer not found"), 404);
+    }
+
+    const isExpired = new Date(invitation.expires_at) < new Date();
+
+    return c.json(
+      standardResponse(200, "Invitation details retrieved successfully", {
+        shop_name: shopData.name,
+        customer_name: customerData.name,
+        owner_name: `${invitation.first_name} ${invitation.last_name}`,
+        email: invitation.email,
+        expires_at: invitation.expires_at,
+        is_expired: isExpired,
+      })
+    );
+  } catch (error) {
+    logger.error("Error fetching invitation:", error);
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
+// Mount the no-auth handler to admin
+admin.route("", getInvitationHandler);
+
+// ===========================
+// 6. ADMIN PROFILE ENDPOINT
+// ===========================
+
+const adminProfileRoute = createRoute({
+  method: "get",
+  path: "/profile",
+  summary: "👤 Get admin profile",
+  description: `
+**Admin profile endpoint** returns admin-specific profile information.
+
+Returns admin permissions, role info, and admin-specific data.
+**Authentication:** Requires admin JWT token in Authorization header.
+  `,
+  tags: ["Admin"],
+  security: [{ BearerAuth: [] }],
+  responses: {
+    200: {
+      description: "Admin profile retrieved successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.object({
+              user_type: z.string(),
+              user_role: z.string(),
+              email: z.string(),
+              permissions: z.array(z.string()),
+              admin_info: z.object({
+                id: z.string(),
+                first_name: z.string(),
+                last_name: z.string(),
+                role: z.string(),
+              }),
+              shop_info: z
+                .object({
+                  id: z.string(),
+                  name: z.string(),
+                  status: z.string(),
+                })
+                .optional(),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+admin.openapi(adminProfileRoute, async (c) => {
+  try {
+    const userType = c.get("userType");
+    const userRole = c.get("userRole");
+    const user = c.get("user");
+    const adminUser = c.get("adminUser");
+    const shop = c.get("shop");
+
+    const permissions = getUserPermissions(userType, userRole);
+
+    const profileData: any = {
+      user_type: userType,
+      user_role: userRole,
+      email: user.email,
+      permissions,
+      admin_info: {
+        id: adminUser.id,
+        first_name: adminUser.first_name,
+        last_name: adminUser.last_name,
+        role: adminUser.role,
+      },
+    };
+
+    // Include shop info if admin has shop access
+    if (shop) {
+      profileData.shop_info = {
+        id: shop.id,
+        name: shop.name,
+        status: shop.status,
+      };
+    }
+
+    return c.json(
+      standardResponse(200, "Admin profile retrieved successfully", profileData)
+    );
+  } catch (error) {
+    logger.error("Error fetching admin profile:", error);
     return c.json(standardResponse(500, "Internal server error"), 500);
   }
 });

@@ -11,6 +11,8 @@ import { env } from "./config/env";
 import adminRoutes from "./routes/admin";
 import posRoutes from "./routes/pos";
 import appRoutes from "./routes/app";
+import shopAdminRoutes from "./routes/shop-admin";
+import publicRoutes from "./routes/public";
 // DatabaseSeeder import removed
 
 const app = new OpenAPIHono({
@@ -49,53 +51,97 @@ app.openAPIRegistry.registerComponent("securitySchemes", "ApiKeyAuth", {
   description: "API Key for POS provider authentication",
 });
 
+app.openAPIRegistry.registerComponent("securitySchemes", "BearerAuth", {
+  type: "http",
+  scheme: "bearer",
+  bearerFormat: "JWT",
+  description: "JWT Bearer token from Supabase Auth for shop owners",
+});
+
 // API Documentation
 app.doc("/api/openapi.json", {
   openapi: "3.0.0",
   info: {
-    version: "2.0.0",
+    version: "3.0.0",
     title: "Zvest Loyalty Platform API",
     description: `
 # Complete Loyalty Platform API
 
-This API provides a comprehensive loyalty platform solution with seamless POS integration and customer mobile app functionality.
+This API provides a comprehensive loyalty platform solution with unified authentication, role-based access control, and streamlined B2B onboarding.
 
 ## Overview
 
-The Zvest Loyalty Platform enables businesses to implement loyalty programs with minimal integration effort. The platform supports both shared database instances for smaller merchants and dedicated enterprise databases for large-scale operations.
+The Zvest Loyalty Platform enables businesses to implement loyalty programs with minimal integration effort. The platform features a unified dashboard for both platform administrators and shop owners, with role-based access control for security.
 
 ## Key Features
 
-- **POS Integration**: Simple REST API for point-of-sale systems
-- **QR Code Generation**: Automatic QR code generation for receipts
-- **Mobile App Support**: Customer-facing endpoints for point redemption
-- **Multi-tenant Architecture**: Support for both shared and dedicated databases
-- **Real-time Points**: Instant point calculation and redemption
+- **🔐 Unified Authentication**: Single dashboard for admins and shop owners with role-based access
+- **🚀 Simplified B2B Onboarding**: One-step customer and shop creation with smart defaults
+- **📧 Automated Setup Flow**: Token-based invitations with secure setup process
+- **🏪 Shop Management**: Complete business dashboard for shop owners
+- **🎟️ Coupon Management**: Full CRUD operations with points-based rewards
+- **📊 Analytics Dashboard**: Real-time transaction and revenue insights
+- **🔌 POS Integration**: Simple REST API for point-of-sale systems
+- **📱 Mobile App Support**: Customer-facing endpoints for point redemption
 
 ## Authentication
 
-The API uses API Key authentication for POS provider endpoints:
+**Admin and Shop Management endpoints** require JWT authentication:
+- **Required Header**: \`Authorization: Bearer YOUR_JWT_TOKEN\`
+- Obtain tokens via Supabase Auth login
+- Role-based access: admins see all data, shop owners see only their data
 
-**For POS Integration endpoints** (\`/api/pos/*\`):
+**POS Integration endpoints** use API Key authentication:
 - **Required Header**: \`x-api-key: your-pos-api-key\`
 - Generate API keys using: \`bun run scripts/generate-api-keys.ts\`
 - Configure in environment: \`POS_PROVIDERS="Provider Name:api-key"\`
 
-**Admin and Customer App endpoints** do not require authentication.
+**Public endpoints** (invitation setup) require no authentication.
 
-## Integration Flow
+## Quick Start Flow
 
-1. **Admin Setup**: Create customer and shop accounts
-2. **POS Integration**: Enable shops and sync menu items
-3. **Transaction Processing**: Create transactions and generate QR codes
-4. **Customer Interaction**: Scan QR codes to earn loyalty points
+### 1. Admin Creates B2B Customer (One Step)
+\`\`\`bash
+POST /api/admin/onboard-simple
+Authorization: Bearer YOUR_ADMIN_JWT
+{
+  "business_name": "Coffee Shop",
+  "contact_email": "contact@coffeeshop.com", 
+  "owner_email": "owner@coffeeshop.com",
+  "owner_first_name": "John",
+  "owner_last_name": "Smith",
+  "pos_provider_name": "Square"
+}
+\`\`\`
 
-## Getting Started
+### 2. Shop Owner Completes Setup
+\`\`\`bash
+POST /api/admin/complete-shop-setup
+{
+  "invitation_token": "abc123...",
+  "password": "SecurePassword123!",
+  "shop_details": { "opening_hours": "9-5", "website": "..." }
+}
+\`\`\`
 
-1. Start with the Admin endpoints to set up customers and shops
-2. Use POS endpoints to integrate with your point-of-sale system
-3. Implement QR code display on receipts
-4. Use App endpoints for customer mobile app integration
+### 3. Shop Owner Manages Business
+\`\`\`bash
+GET /api/shop-admin/shop
+Authorization: Bearer SHOP_OWNER_JWT
+\`\`\`
+
+### 4. POS Integration
+\`\`\`bash
+POST /api/pos/transactions
+x-api-key: your-pos-api-key
+\`\`\`
+
+## Role-Based Access
+
+- **Platform Admins**: Create customers, view all shops, system-wide analytics
+- **Shop Owners**: Manage their shop, coupons, view their analytics
+- **POS Systems**: Create transactions, sync menu items
+- **Customers**: Scan QR codes, redeem points (mobile app)
 `,
     contact: {
       name: "Zvest Support",
@@ -107,29 +153,39 @@ The API uses API Key authentication for POS provider endpoints:
   },
   servers: [
     {
-      url:
-        env.NODE_ENV === "production"
-          ? "https://zvest-loyalty-backend.onrender.com"
-          : "http://localhost:3000",
-      description: env.NODE_ENV === "production" ? "Production" : "Development",
+      url: "http://localhost:3000",
+      description: "Development - Local server",
+    },
+    {
+      url: "https://zvest-loyalty-backend.onrender.com",
+      description: "Production - Live server",
     },
   ],
-
   tags: [
     {
       name: "Admin",
       description:
-        "Administrative endpoints for B2B customer and shop management. Used by platform administrators to onboard new customers and configure shops.",
+        "🔧 Platform administration endpoints. B2B onboarding, customer management, and system configuration. Requires admin authentication.",
+    },
+    {
+      name: "Public",
+      description:
+        "🌐 Public endpoints including shop owner setup and store directory. Browse stores, view store details, get available coupons, and complete shop setup. No authentication required.",
+    },
+    {
+      name: "Shop Management",
+      description:
+        "🏪 Complete shop owner business dashboard. Manage shop settings, coupons, analytics, and business operations. Requires shop owner authentication.",
     },
     {
       name: "POS Integration",
       description:
-        "Point-of-sale system integration endpoints. These endpoints allow POS systems to connect to the loyalty platform, sync menu items, and process transactions.",
+        "🔌 Point-of-sale system integration endpoints. Connect POS systems, sync menu items, and process transactions. Requires POS API key.",
     },
     {
       name: "Customer App",
       description:
-        "Customer-facing mobile app endpoints. Used by the customer mobile application to scan QR codes and redeem loyalty points.",
+        "📱 Complete customer mobile app experience. Scan QR codes, manage loyalty points, view transactions, redeem coupons, and manage profile. Public access with email/phone identification.",
     },
   ],
 });
@@ -153,53 +209,82 @@ app.get(
 );
 
 // Route mounting with clear organization
-// Admin routes - for B2B customer management
+// Admin routes - unified authentication with role-based access
 app.route("/api/admin", adminRoutes);
 
-// POS routes - for POS system integration
+// Shop Admin routes - for shop owner business dashboard
+app.route("/api/shop-admin", shopAdminRoutes);
+
+// New shop routes - for shop-specific endpoints
+import shopRoutes from "./routes/shop";
+app.route("/api/shop", shopRoutes);
+
+// New app-user routes - for B2C app user endpoints
+import appUserRoutes from "./routes/app-user";
+app.route("/api/app-user", appUserRoutes);
+
+// Public routes - for public store APIs (no authentication required)
+app.route("/api/public", publicRoutes);
+
+// POS routes - for point-of-sale system integration
 app.route("/api/pos", posRoutes);
 
-// Customer app routes - for mobile app QR scanning
+// App routes - for customer mobile application
 app.route("/api/app", appRoutes);
 
-// Root endpoint with API overview
+// Profile endpoints now organized by user role:
+// - GET /api/admin/profile (admin permissions, role info, admin-specific data)
+// - GET /api/shop/profile (shop details, subscription info, shop-specific data)
+// - GET /api/app-user/profile (loyalty points, transaction history, user preferences)
+
+// Root endpoint with updated API overview
 app.get("/", (c) => {
   return c.json({
     name: "Zvest Loyalty Platform API",
-    version: "2.0.0",
-    description: "Complete loyalty platform with POS integration",
+    version: "3.0.0",
+    description:
+      "Complete loyalty platform with unified authentication and role-based access",
     endpoints: {
       documentation: "/api/docs",
       openapi: "/api/openapi.json",
       health: "/health",
     },
     api_groups: {
-      admin: "/api/admin - B2B customer and shop management",
-      pos: "/api/pos - POS system integration",
-      app: "/api/app - Customer mobile app endpoints",
+      admin: "/api/admin - B2B customer management (requires admin auth)",
+      shop_admin:
+        "/api/shop-admin - Shop owner business dashboard (requires shop owner auth)",
+      shop: "/api/shop - Shop-specific endpoints (requires shop owner auth)",
+      app_user: "/api/app-user - B2C app user endpoints (public)",
+      public: "/api/public - Public store APIs (no authentication required)",
+      pos: "/api/pos - POS system integration (requires API key)",
+      app: "/api/app - Customer mobile app endpoints (public)",
     },
-    flow: {
-      "1_onboard_customer": "POST /api/admin/customers",
-      "2a_create_shop": "POST /api/admin/shops (with customer_id)",
-      "2b_create_shop_easy":
-        "POST /api/admin/shops/by-name (with customer_name)",
-      "3_get_shops": "GET /api/pos/shops",
-      "4_enable_shop": "POST /api/pos/shops/{id}/enable",
-      "5_sync_menu":
-        "POST /api/pos/shops/{id}/articles (with promotional pricing)",
-      "6_create_transaction": "POST /api/pos/transactions",
-      "7_get_qr_data": "GET /api/pos/transactions/{id}/qr-data",
-      "8_scan_qr": "POST /api/app/scan-qr",
+    modern_flow: {
+      "1_admin_login": "Login admin via Supabase Auth",
+      "2_simple_onboarding":
+        "POST /api/admin/onboard-simple (One-step B2B setup)",
+      "3_shop_owner_setup":
+        "POST /api/admin/complete-shop-setup (Shop owner creates account)",
+      "4_shop_dashboard":
+        "Shop owner logs in and manages business via /api/shop-admin",
+      "5_pos_integration": "POS system integrates via /api/pos endpoints",
+      "6_customer_app": "Customers use mobile app via /api/app endpoints",
     },
-    pricing_features: {
-      current_pricing: "GET /api/pos/shops/{id}/current-pricing",
-      promotional_pricing:
-        "Simple promotional pricing (one promotion per article)",
-      coupon_eligibility: "Per-article coupon eligibility flags",
+    authentication: {
+      admin_endpoints: "Bearer JWT token (Supabase Auth)",
+      shop_endpoints: "Bearer JWT token (Supabase Auth)",
+      pos_endpoints: "x-api-key header",
+      app_endpoints: "No authentication required",
+      setup_endpoints: "Invitation token (public)",
     },
-    admin_helpers: {
-      list_customers: "GET /api/admin/customers",
-      list_pos_providers: "GET /api/admin/pos-providers",
+    key_improvements: {
+      unified_auth: "Single authentication system for admins and shop owners",
+      role_based_access: "Same endpoints, different data based on user role",
+      role_specific_profiles:
+        "GET /api/admin/profile, /api/shop/profile, /api/app-user/profile",
+      simplified_onboarding: "60% fewer required fields for B2B setup",
+      secure_setup: "Token-based invitation system with expiration",
+      modern_ui_ready: "Designed for React/Next.js frontend integration",
     },
   });
 });

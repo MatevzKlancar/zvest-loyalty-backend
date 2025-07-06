@@ -37,8 +37,13 @@ CREATE TABLE IF NOT EXISTS shops (
     address TEXT,
     phone VARCHAR,
     email VARCHAR,
+    website VARCHAR,
     type VARCHAR,
-    status VARCHAR DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'suspended', 'inactive')),
+    loyalty_type VARCHAR DEFAULT 'points' CHECK (loyalty_type IN ('points', 'coupons')),
+    opening_hours TEXT,
+    social_media JSONB DEFAULT '{}',
+    status VARCHAR DEFAULT 'pending' CHECK (status IN ('pending', 'pending_setup', 'active', 'suspended', 'inactive')),
+    owner_user_id UUID, -- Links to Supabase Auth user
     approved_by VARCHAR,
     approved_at TIMESTAMP WITH TIME ZONE,
     pos_synced_at TIMESTAMP WITH TIME ZONE,
@@ -47,6 +52,37 @@ CREATE TABLE IF NOT EXISTS shops (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     UNIQUE(customer_id, pos_provider_id, pos_shop_id)
+);
+
+-- Create admin users table for platform management
+CREATE TABLE IF NOT EXISTS admin_users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    supabase_user_id UUID UNIQUE NOT NULL,
+    email VARCHAR UNIQUE NOT NULL,
+    first_name VARCHAR NOT NULL,
+    last_name VARCHAR NOT NULL,
+    role VARCHAR NOT NULL CHECK (role IN ('platform_admin', 'super_admin')),
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Create shop owner invitations table
+CREATE TABLE IF NOT EXISTS shop_owner_invitations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+    email VARCHAR NOT NULL,
+    first_name VARCHAR NOT NULL,
+    last_name VARCHAR NOT NULL,
+    phone VARCHAR,
+    invitation_token VARCHAR UNIQUE NOT NULL,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    status VARCHAR DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'expired', 'cancelled')),
+    invited_by_admin UUID REFERENCES admin_users(id),
+    completed_at TIMESTAMP WITH TIME ZONE,
+    user_id UUID, -- Links to created Supabase Auth user when completed
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- Create articles table
@@ -198,6 +234,11 @@ CREATE TABLE IF NOT EXISTS transaction_logs (
 -- Foreign key indexes (PostgreSQL doesn't auto-create these)
 CREATE INDEX idx_shops_customer_id ON shops(customer_id);
 CREATE INDEX idx_shops_pos_provider_id ON shops(pos_provider_id);
+CREATE INDEX idx_admin_users_supabase_user_id ON admin_users(supabase_user_id);
+CREATE INDEX idx_shop_owner_invitations_shop_id ON shop_owner_invitations(shop_id);
+CREATE INDEX idx_shop_owner_invitations_invited_by_admin ON shop_owner_invitations(invited_by_admin);
+CREATE INDEX idx_shop_owner_invitations_token ON shop_owner_invitations(invitation_token);
+CREATE INDEX idx_shop_owner_invitations_email ON shop_owner_invitations(email);
 CREATE INDEX idx_articles_shop_id ON articles(shop_id);
 CREATE INDEX idx_loyalty_programs_shop_id ON loyalty_programs(shop_id);
 CREATE INDEX idx_coupons_shop_id ON coupons(shop_id);
@@ -225,6 +266,8 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER update_customers_updated_at BEFORE UPDATE ON customers FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_pos_providers_updated_at BEFORE UPDATE ON pos_providers FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_shops_updated_at BEFORE UPDATE ON shops FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_admin_users_updated_at BEFORE UPDATE ON admin_users FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_shop_owner_invitations_updated_at BEFORE UPDATE ON shop_owner_invitations FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_articles_updated_at BEFORE UPDATE ON articles FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_transactions_updated_at BEFORE UPDATE ON transactions FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
