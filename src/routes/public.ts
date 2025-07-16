@@ -144,6 +144,7 @@ publicRoutes.openapi(getStoresRoute, async (c) => {
         opening_hours,
         loyalty_type,
         type,
+        image_url,
         status,
         created_at
       `
@@ -270,6 +271,7 @@ publicRoutes.openapi(getStoreByIdRoute, async (c) => {
         opening_hours,
         loyalty_type,
         type,
+        image_url,
         status,
         social_media,
         created_at,

@@ -164,7 +164,8 @@ const enableShopRoute = createRoute({
   method: "post",
   path: "/shops/{shop_id}/enable",
   summary: "Enable shop in POS system",
-  description: "Activates a shop and connects it to the POS system",
+  description:
+    "Activates a pending shop and connects it to the POS system. Only shops in 'pending' status can be enabled.",
   tags: ["POS Integration"],
   security: [{ ApiKeyAuth: [] }],
   request: {
@@ -201,7 +202,7 @@ pos.openapi(enableShopRoute, async (c) => {
     const enableData = c.req.valid("json");
     const posProvider = c.get("posProvider");
 
-    // Verify shop belongs to this POS provider
+    // Verify shop belongs to this POS provider and is in pending status
     const { data: existingShop, error: shopError } = await supabase
       .from("shops")
       .select("*")
@@ -213,6 +214,17 @@ pos.openapi(enableShopRoute, async (c) => {
       return c.json(
         standardResponse(404, "Shop not found or access denied"),
         404
+      );
+    }
+
+    // Only allow enabling shops that are in pending status
+    if (existingShop.status !== "pending") {
+      return c.json(
+        standardResponse(
+          400,
+          `Shop must be in pending status to enable. Current status: ${existingShop.status}`
+        ),
+        400
       );
     }
 

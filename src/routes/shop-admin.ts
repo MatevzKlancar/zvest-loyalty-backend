@@ -25,6 +25,7 @@ const updateShopSchema = z.object({
   website: z.string().url().optional(),
   loyalty_type: z.enum(["points", "coupons"]).optional(),
   opening_hours: z.string().optional(), // Simple string like "Mon-Fri: 9:00-18:00, Sat: 10:00-16:00, Sun: Closed"
+  image_url: z.string().url().optional(),
   social_media: z
     .object({
       facebook: z.string().optional(),
@@ -53,6 +54,10 @@ const createCouponSchema = z.object({
 
 const updateCouponSchema = createCouponSchema.partial().omit({ code: true });
 
+const uploadImageSchema = z.object({
+  image_url: z.string().url("Invalid image URL format"),
+});
+
 const shopResponseSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
@@ -64,6 +69,7 @@ const shopResponseSchema = z.object({
   type: z.string().nullable(),
   loyalty_type: z.string().nullable(),
   opening_hours: z.string().nullable(),
+  image_url: z.string().nullable(),
   social_media: z.record(z.any()).nullable(),
   status: z.string(),
   created_at: z.string(),
@@ -122,7 +128,25 @@ shopAdmin.openapi(getShopRoute, async (c) => {
 
     const { data: shopDetails, error } = await supabase
       .from("shops")
-      .select("*")
+      .select(
+        `
+        id,
+        name,
+        description,
+        address,
+        phone,
+        email,
+        website,
+        type,
+        loyalty_type,
+        opening_hours,
+        image_url,
+        social_media,
+        status,
+        created_at,
+        updated_at
+      `
+      )
       .eq("id", shop.id)
       .single();
 
@@ -197,6 +221,71 @@ shopAdmin.openapi(updateShopRoute, async (c) => {
     );
   } catch (error) {
     logger.error("Error updating shop:", error);
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
+// Upload/Update shop image
+const uploadShopImageRoute = createRoute({
+  method: "post",
+  path: "/shop/image",
+  summary: "Upload shop image",
+  description: "Upload or update the shop's business image",
+  tags: ["Shop Management"],
+  security: [{ BearerAuth: [] }],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: uploadImageSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Shop image updated successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.object({
+              image_url: z.string(),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+shopAdmin.openapi(uploadShopImageRoute, async (c) => {
+  try {
+    const shop = c.get("shop");
+    const { image_url } = c.req.valid("json");
+
+    // Update shop image URL
+    const { data: updatedShop, error } = await supabase
+      .from("shops")
+      .update({ image_url })
+      .eq("id", shop.id)
+      .select("image_url")
+      .single();
+
+    if (error) {
+      logger.error("Failed to update shop image:", error);
+      return c.json(standardResponse(500, "Failed to update shop image"), 500);
+    }
+
+    logger.info(`Shop image updated successfully: ${shop.id}`);
+    return c.json(
+      standardResponse(200, "Shop image updated successfully", {
+        image_url: updatedShop.image_url,
+      })
+    );
+  } catch (error) {
+    logger.error("Error updating shop image:", error);
     return c.json(standardResponse(500, "Internal server error"), 500);
   }
 });

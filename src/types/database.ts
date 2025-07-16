@@ -35,7 +35,8 @@ export interface Database {
           name: string;
           description: string | null;
           type: string | null;
-          status: "pending" | "active" | "suspended";
+          image_url: string | null;
+          status: "pending" | "active" | "suspended" | "inactive";
           approved_by: string | null;
           approved_at: string | null;
           pos_synced_at: string | null;
@@ -50,7 +51,8 @@ export interface Database {
           name: string;
           description?: string | null;
           type?: string | null;
-          status?: "pending" | "active" | "suspended";
+          image_url?: string | null;
+          status?: "pending" | "active" | "suspended" | "inactive";
           approved_by?: string | null;
           approved_at?: string | null;
           pos_synced_at?: string | null;
@@ -65,7 +67,8 @@ export interface Database {
           name?: string;
           description?: string | null;
           type?: string | null;
-          status?: "pending" | "active" | "suspended";
+          image_url?: string | null;
+          status?: "pending" | "active" | "suspended" | "inactive";
           approved_by?: string | null;
           approved_at?: string | null;
           pos_synced_at?: string | null;

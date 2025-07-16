@@ -55,6 +55,7 @@ Returns shop details, subscription info, and shop-specific data.
                 website: z.string().optional(),
                 opening_hours: z.string().optional(),
                 loyalty_type: z.string(),
+                image_url: z.string().optional(),
               }),
               subscription_info: z.object({
                 customer_id: z.string(),
@@ -85,7 +86,7 @@ shop.openapi(shopProfileRoute, async (c) => {
       .select(
         `
         id, name, status, description, address, phone, website, 
-        opening_hours, loyalty_type, customer_id,
+        opening_hours, loyalty_type, image_url, customer_id,
         customers!inner (
           id, name, type, subscription_tier
         )
@@ -114,6 +115,7 @@ shop.openapi(shopProfileRoute, async (c) => {
         website: shopDetails.website,
         opening_hours: shopDetails.opening_hours,
         loyalty_type: shopDetails.loyalty_type,
+        image_url: shopDetails.image_url,
       },
       subscription_info: {
         customer_id: shopDetails.customers[0].id,

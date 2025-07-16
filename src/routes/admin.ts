@@ -82,7 +82,7 @@ Requires only 7 fields instead of 15+. Perfect for sales teams and admin dashboa
 - \`subscription_tier\`: "basic"
 - \`loyalty_type\`: "points"
 - \`shop_name\`: Same as business_name
-- \`shop_status\`: "pending_setup"
+- \`shop_status\`: "pending"
 
 **Authentication:** Requires admin JWT token in Authorization header.
 
@@ -238,7 +238,7 @@ admin.openapi(simpleB2bOnboardingRoute, async (c) => {
         email: data.contact_email,
         phone: data.contact_phone,
         loyalty_type: data.loyalty_type,
-        status: "pending_setup",
+        status: "pending",
         settings: {
           created_via: "simple_onboarding",
         },
@@ -462,7 +462,8 @@ const completeShopSetupRoute = createRoute({
   description: `
 **Public endpoint** used by shop owners to complete their setup process.
 
-Creates Supabase Auth account and activates the shop.
+Creates Supabase Auth account and completes shop owner profile.
+Shop remains in "pending" status until POS company enables it.
 Shop owners access this via the setup URL sent in invitation email.
 
 **No authentication required** - uses invitation token for security.
@@ -575,7 +576,7 @@ completeShopSetupHandler.openapi(completeShopSetupRoute, async (c) => {
 
     // Step 3: Update Shop Details (if provided)
     let updateData: any = {
-      status: "active", // Activate the shop
+      // Keep status as "pending" - only POS companies can activate shops
       owner_user_id: authUser.user.id, // Link to Supabase Auth user
     };
 
