@@ -4,6 +4,7 @@ import { supabase } from "../config/database";
 import { logger } from "../config/logger";
 import { standardResponse } from "../middleware/error";
 import crypto from "crypto";
+import { generateUniqueRedemptionCode } from "../utils/redemption-code";
 
 const app = new OpenAPIHono();
 
@@ -518,15 +519,15 @@ const activateCouponSchema = z.object({
 });
 
 const activatedCouponResponseSchema = z.object({
-  activation_id: z.string().uuid(),
+  redemption_id: z.string(),
   coupon: z.object({
     id: z.string().uuid(),
-    code: z.string(),
     type: z.string(),
     value: z.number(),
-    discount_percentage: z.number().nullable(),
+    name: z.string().nullable(),
     description: z.string().nullable(),
-    terms_conditions: z.string().nullable(),
+    min_purchase_amount: z.number(),
+    max_discount_amount: z.number().nullable(),
     expires_at: z.string().nullable(),
   }),
   shop: z.object({
@@ -541,9 +542,9 @@ const activatedCouponResponseSchema = z.object({
     points_balance_after: z.number(),
     points_redeemed: z.number(),
   }),
-  activation_code: z.string(),
-  activated_at: z.string(),
+  redeemed_at: z.string(),
   expires_at: z.string(),
+  valid_for_minutes: z.number(),
   usage_instructions: z.string(),
 });
 
@@ -566,10 +567,8 @@ Activate a coupon by redeeming loyalty points. This converts points into a usabl
 5. Customer receives activation details and usage instructions
 
 **Coupon Types Supported:**
-- **Percentage Discount**: Get X% off your next purchase
-- **Fixed Amount**: Get $X off your next purchase
-- **Free Item**: Get a specific item free
-- **Points Multiplier**: Earn bonus points on next purchase
+- **Percentage Discount**: Get X% off your next purchase (100% = free item)
+- **Fixed Amount**: Get €X off your next purchase
 
 **Example Usage:**
 \`\`\`bash
@@ -657,13 +656,12 @@ app.openapi(activateCouponRoute, async (c) => {
         `
         id,
         shop_id,
-        code,
         type,
         value,
         points_required,
-        discount_percentage,
         description,
-        terms_conditions,
+        min_purchase_amount,
+        max_discount_amount,
         expires_at,
         usage_limit,
         used_count,
@@ -701,11 +699,21 @@ app.openapi(activateCouponRoute, async (c) => {
       );
     }
 
-    // Get customer's loyalty account for this shop
+    // Get customer and loyalty account for this shop
+    const { data: appUser, error: userError } = await supabase
+      .from("app_users")
+      .select("id")
+      .eq("email", customer_email)
+      .single();
+
+    if (userError || !appUser) {
+      return c.json(standardResponse(400, "Customer not found"), 400);
+    }
+
     const { data: loyaltyAccount, error: loyaltyError } = await supabase
       .from("customer_loyalty_accounts")
       .select("points_balance, total_points_earned, total_points_redeemed")
-      .eq("customer_email", customer_email)
+      .eq("app_user_id", appUser.id)
       .eq("shop_id", coupon.shop_id)
       .single();
 
@@ -732,21 +740,28 @@ app.openapi(activateCouponRoute, async (c) => {
       );
     }
 
-    // Generate unique activation code
-    const activationCode = `ACT-${coupon.code}-${Date.now()}`;
-    const activationId = crypto.randomUUID();
-    const activatedAt = new Date().toISOString();
+    // Generate unique redemption code (server-side)
+    const codeResult = await generateUniqueRedemptionCode(10);
 
-    // Set expiration for activated coupon (default 30 days or coupon's expiry, whichever is sooner)
-    const defaultExpiryDays = 30;
-    const defaultExpiry = new Date();
-    defaultExpiry.setDate(defaultExpiry.getDate() + defaultExpiryDays);
+    if (!codeResult.success) {
+      logger.error(
+        "Failed to generate unique redemption code:",
+        codeResult.error
+      );
+      return c.json(
+        standardResponse(500, "Failed to generate redemption code"),
+        500
+      );
+    }
 
-    const activationExpiry = coupon.expires_at
-      ? new Date(coupon.expires_at) < defaultExpiry
-        ? coupon.expires_at
-        : defaultExpiry.toISOString()
-      : defaultExpiry.toISOString();
+    const redemptionId = codeResult.code;
+
+    const redeemedAt = new Date().toISOString();
+
+    // Set expiration for activated coupon (5 minutes from activation)
+    const expiryTime = new Date();
+    expiryTime.setMinutes(expiryTime.getMinutes() + 5);
+    const redemptionExpiry = expiryTime.toISOString();
 
     try {
       // Begin transaction operations
@@ -758,32 +773,28 @@ app.openapi(activateCouponRoute, async (c) => {
           points_balance: loyaltyAccount.points_balance - requiredPoints,
           total_points_redeemed:
             loyaltyAccount.total_points_redeemed + requiredPoints,
-          updated_at: activatedAt,
+          updated_at: redeemedAt,
         })
-        .eq("customer_email", customer_email)
+        .eq("app_user_id", appUser.id)
         .eq("shop_id", coupon.shop_id);
 
       if (pointsError) {
         throw new Error(`Failed to deduct points: ${pointsError.message}`);
       }
 
-      // 2. Create coupon activation record
-      const { error: activationError } = await supabase
-        .from("coupon_activations")
+      // 2. Create coupon redemption record
+      const { error: redemptionError } = await supabase
+        .from("coupon_redemptions")
         .insert({
-          id: activationId,
+          id: redemptionId,
           coupon_id: couponId,
-          shop_id: coupon.shop_id,
-          customer_email: customer_email,
-          customer_phone: customer_phone,
-          activation_code: activationCode,
-          points_redeemed: requiredPoints,
-          activated_at: activatedAt,
-          expires_at: activationExpiry,
+          app_user_id: appUser.id,
+          points_deducted: requiredPoints,
+          redeemed_at: redeemedAt,
           status: "active",
         });
 
-      if (activationError) {
+      if (redemptionError) {
         // Rollback points deduction
         await supabase
           .from("customer_loyalty_accounts")
@@ -791,78 +802,66 @@ app.openapi(activateCouponRoute, async (c) => {
             points_balance: loyaltyAccount.points_balance,
             total_points_redeemed: loyaltyAccount.total_points_redeemed,
           })
-          .eq("customer_email", customer_email)
+          .eq("app_user_id", appUser.id)
           .eq("shop_id", coupon.shop_id);
 
         throw new Error(
-          `Failed to create activation record: ${activationError.message}`
+          `Failed to create redemption record: ${redemptionError.message}`
         );
       }
 
-      // 3. Update coupon usage count
-      await supabase
-        .from("coupons")
-        .update({
-          used_count: coupon.used_count + 1,
-          updated_at: activatedAt,
-        })
-        .eq("id", couponId);
-
-      // 4. Create transaction record for points redemption
+      // 3. Create transaction record for points redemption
       await supabase.from("transactions").insert({
         shop_id: coupon.shop_id,
-        customer_email: customer_email,
+        app_user_id: appUser.id,
+        pos_invoice_id: `COUPON-REDEEM-${redemptionId}`,
         total_amount: 0, // No monetary transaction
+        tax_amount: 0,
+        items: [],
         loyalty_points_awarded: 0,
-        loyalty_points_redeemed: requiredPoints,
         status: "completed",
-        transaction_type: "coupon_redemption",
-        pos_invoice_id: `COUPON-${activationCode}`,
         metadata: {
+          type: "coupon_redemption",
           coupon_id: couponId,
-          activation_id: activationId,
-          activation_code: activationCode,
+          redemption_id: redemptionId,
+          points_deducted: requiredPoints,
         },
       });
 
       // Generate usage instructions based on coupon type
-      let usageInstructions =
-        "Present this activation code to the cashier when making your purchase.";
-
+      let usageInstructions;
       switch (coupon.type) {
         case "percentage":
-          usageInstructions = `Show this code to get ${
-            coupon.discount_percentage
-          }% off your purchase. ${coupon.terms_conditions || ""}`;
+          if (coupon.value === 100) {
+            usageInstructions = `Show this QR code to get a free item.`;
+          } else {
+            usageInstructions = `Show this QR code to get ${coupon.value}% off your purchase.`;
+          }
           break;
         case "fixed":
-          usageInstructions = `Show this code to get $${
-            coupon.value
-          } off your purchase. ${coupon.terms_conditions || ""}`;
+          usageInstructions = `Show this QR code to get €${coupon.value} off your purchase.`;
           break;
-        case "free_item":
-          usageInstructions = `Show this code to get your free item. ${
-            coupon.description || ""
-          } ${coupon.terms_conditions || ""}`;
-          break;
-        case "points_multiplier":
-          usageInstructions = `Show this code to earn ${
-            coupon.value
-          }x points on your next purchase. ${coupon.terms_conditions || ""}`;
-          break;
+        default:
+          usageInstructions =
+            "Present this QR code to the cashier when making your purchase.";
       }
 
       const shop = coupon.shops as any;
       const activationData = {
-        activation_id: activationId,
+        redemption_id: redemptionId,
+        qr_code_data: redemptionId, // QR code contains the redemption ID
         coupon: {
           id: coupon.id,
-          code: coupon.code,
           type: coupon.type,
           value: coupon.value,
-          discount_percentage: coupon.discount_percentage,
+          name:
+            coupon.description ||
+            `${coupon.value}${
+              coupon.type === "percentage" ? "%" : "€"
+            } discount`,
           description: coupon.description,
-          terms_conditions: coupon.terms_conditions,
+          min_purchase_amount: coupon.min_purchase_amount || 0,
+          max_discount_amount: coupon.max_discount_amount,
           expires_at: coupon.expires_at,
         },
         shop: {
@@ -877,10 +876,10 @@ app.openapi(activateCouponRoute, async (c) => {
           points_balance_after: loyaltyAccount.points_balance - requiredPoints,
           points_redeemed: requiredPoints,
         },
-        activation_code: activationCode,
-        activated_at: activatedAt,
-        expires_at: activationExpiry,
-        usage_instructions: usageInstructions,
+        redeemed_at: redeemedAt,
+        expires_at: redemptionExpiry,
+        valid_for_minutes: 5,
+        usage_instructions: `Show QR code or tell staff: "${redemptionId}" (${redemptionId.length} digits) - Valid for 5 minutes`,
       };
 
       return c.json(

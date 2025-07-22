@@ -4,6 +4,7 @@ import { authenticatePOSProvider, type AuthContext } from "../middleware/auth";
 import { supabase } from "../config/database";
 import { logger } from "../config/logger";
 import { standardResponse } from "../middleware/error";
+import { isValidRedemptionCodeFormat } from "../utils/redemption-code";
 
 const pos = new OpenAPIHono<AuthContext>();
 
@@ -64,6 +65,14 @@ const createTransactionSchema = z.object({
   metadata: z.record(z.any()).optional(),
 });
 
+const validateCouponSchema = z.object({
+  shop_id: z.string().uuid("Invalid shop ID"),
+  redemption_id: z
+    .string()
+    .min(6)
+    .max(6, "Invalid redemption code format - must be 6 digits"),
+});
+
 const shopResponseSchema = z.object({
   id: z.string().uuid(),
   pos_shop_id: z.string().nullable(),
@@ -91,6 +100,43 @@ const qrDataResponseSchema = z.object({
   transaction_id: z.string().uuid(),
   shop_name: z.string(),
   total_amount: z.number(),
+});
+
+const couponResponseSchema = z.object({
+  id: z.string().uuid(),
+  code: z.string(),
+  type: z.string(),
+  value: z.number(),
+  discount_percentage: z.number().nullable(),
+  description: z.string().nullable(),
+  terms_conditions: z.string().nullable(),
+  category: z.string(),
+  min_purchase_amount: z.number(),
+  max_discount_amount: z.number().nullable(),
+  expires_at: z.string().nullable(),
+  usage_limit: z.number().nullable(),
+  used_count: z.number(),
+  points_required: z.number().nullable(),
+  is_active: z.boolean(),
+});
+
+const validatedCouponResponseSchema = z.object({
+  redemption_id: z.string(),
+  coupon: z.object({
+    id: z.string().uuid(),
+    name: z.string(), // description field as name
+    description: z.string().nullable(),
+    type: z.string(), // "percentage" or "fixed"
+    value: z.number(), // Interpreted based on type
+    min_purchase_amount: z.number(),
+    max_discount_amount: z.number().nullable(),
+  }),
+  shop: z.object({
+    id: z.string().uuid(),
+    name: z.string(),
+  }),
+  valid: z.boolean(),
+  message: z.string(),
 });
 
 // Step 2 & 3: Get all shops for POS provider
@@ -804,6 +850,314 @@ pos.openapi(getCurrentPricingRoute, async (c) => {
     );
   } catch (error) {
     logger.error("Error getting current pricing:", error);
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
+// Get shop coupons for POS display
+const getShopCouponsRoute = createRoute({
+  method: "get",
+  path: "/shops/{shop_id}/coupons",
+  summary: "Get active coupons for shop",
+  description:
+    "Returns all active coupons available for the shop that can be redeemed by customers",
+  tags: ["POS Integration"],
+  security: [{ ApiKeyAuth: [] }],
+  request: {
+    params: z.object({
+      shop_id: z.string().uuid("Invalid shop ID"),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Shop coupons retrieved successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.array(couponResponseSchema),
+          }),
+        },
+      },
+    },
+  },
+});
+
+pos.openapi(getShopCouponsRoute, async (c) => {
+  try {
+    const { shop_id } = c.req.valid("param");
+    const posProvider = c.get("posProvider");
+
+    // Verify shop belongs to POS provider
+    const { data: shop, error: shopError } = await supabase
+      .from("shops")
+      .select("id, name")
+      .eq("id", shop_id)
+      .eq("pos_provider_id", posProvider.id)
+      .eq("status", "active")
+      .single();
+
+    if (shopError || !shop) {
+      return c.json(
+        standardResponse(404, "Shop not found or access denied"),
+        404
+      );
+    }
+
+    // Get active coupons for the shop
+    const { data: coupons, error } = await supabase
+      .from("coupons")
+      .select("*")
+      .eq("shop_id", shop_id)
+      .eq("is_active", true)
+      .or("expires_at.is.null,expires_at.gt." + new Date().toISOString())
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      logger.error("Failed to fetch shop coupons:", error);
+      return c.json(standardResponse(500, "Failed to fetch coupons"), 500);
+    }
+
+    return c.json(
+      standardResponse(200, "Shop coupons retrieved successfully", coupons)
+    );
+  } catch (error) {
+    logger.error("Error fetching shop coupons:", error);
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
+// Validate and redeem coupon via QR scan
+const validateCouponRoute = createRoute({
+  method: "post",
+  path: "/coupons/validate",
+  summary: "Validate and redeem coupon",
+  description: `
+Validates a coupon redemption ID from QR code scan and applies the discount if valid.
+
+**Flow:**
+1. Customer shows QR code containing redemption ID
+2. POS system scans QR code and extracts redemption ID
+3. POS calls this endpoint to validate and redeem coupon
+4. System checks validity (5 minute expiry) and marks as used
+5. Returns discount amount and coupon details for POS to apply
+
+**Important Notes:**
+- Coupon redemptions expire after 5 minutes
+- Once validated, coupon is marked as "used" and cannot be reused
+- Discount percentage is returned as 0-100 (e.g., 20 = 20% off)
+  `,
+  tags: ["POS Integration"],
+  security: [{ ApiKeyAuth: [] }],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: validateCouponSchema.openapi({
+            example: {
+              shop_id: "123e4567-e89b-12d3-a456-426614174000",
+              redemption_id: "394750",
+            },
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Coupon validated and redeemed successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: validatedCouponResponseSchema,
+          }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid or expired coupon",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean().default(false),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+  },
+});
+
+pos.openapi(validateCouponRoute, async (c) => {
+  try {
+    const { shop_id, redemption_id } = c.req.valid("json");
+    const posProvider = c.get("posProvider");
+
+    // Validate redemption code format (6 digits)
+    if (!isValidRedemptionCodeFormat(redemption_id)) {
+      return c.json(
+        standardResponse(
+          400,
+          "Invalid redemption code format - must be 6 digits"
+        ),
+        400
+      );
+    }
+
+    // Verify shop belongs to POS provider
+    const { data: shop, error: shopError } = await supabase
+      .from("shops")
+      .select("id, name")
+      .eq("id", shop_id)
+      .eq("pos_provider_id", posProvider.id)
+      .eq("status", "active")
+      .single();
+
+    if (shopError || !shop) {
+      return c.json(
+        standardResponse(404, "Shop not found or access denied"),
+        404
+      );
+    }
+
+    // Get coupon redemption with coupon details
+    const { data: redemption, error: redemptionError } = await supabase
+      .from("coupon_redemptions")
+      .select(
+        `
+        id,
+        coupon_id,
+        app_user_id,
+        points_deducted,
+        redeemed_at,
+        status,
+        coupons (
+          id,
+          shop_id,
+          type,
+          value,
+          description,
+          expires_at,
+          min_purchase_amount,
+          max_discount_amount
+        )
+      `
+      )
+      .eq("id", redemption_id)
+      .eq("status", "active")
+      .single();
+
+    if (redemptionError || !redemption) {
+      return c.json(
+        standardResponse(400, "Invalid or already used coupon redemption"),
+        400
+      );
+    }
+
+    const coupon = redemption.coupons as any;
+
+    // Verify coupon belongs to the shop
+    if (coupon.shop_id !== shop_id) {
+      return c.json(
+        standardResponse(400, "Coupon does not belong to this shop"),
+        400
+      );
+    }
+
+    // Check if redemption has expired (5 minutes from redeemed_at)
+    const redeemedTime = new Date(redemption.redeemed_at);
+    const expiryTime = new Date(redeemedTime.getTime() + 5 * 60 * 1000); // 5 minutes
+    const now = new Date();
+
+    if (now > expiryTime) {
+      // Mark as expired
+      await supabase
+        .from("coupon_redemptions")
+        .update({ status: "expired" })
+        .eq("id", redemption_id);
+
+      return c.json(
+        standardResponse(
+          400,
+          "Coupon redemption has expired (valid for 5 minutes only)"
+        ),
+        400
+      );
+    }
+
+    // Check coupon's own expiry
+    if (coupon.expires_at && new Date(coupon.expires_at) < now) {
+      return c.json(standardResponse(400, "Coupon has expired"), 400);
+    }
+
+    // Mark redemption as used
+    const { error: updateError } = await supabase
+      .from("coupon_redemptions")
+      .update({
+        status: "used",
+        discount_applied: coupon.value, // Store the coupon value for records
+      })
+      .eq("id", redemption_id);
+
+    if (updateError) {
+      logger.error("Failed to update coupon redemption status:", updateError);
+      return c.json(
+        standardResponse(500, "Failed to mark coupon as used"),
+        500
+      );
+    }
+
+    // Generate message based on coupon type and value
+    let message;
+    switch (coupon.type) {
+      case "percentage":
+        if (coupon.value === 100) {
+          message = `Free item (100% discount)`;
+        } else {
+          message = `Apply ${coupon.value}% discount`;
+        }
+        break;
+      case "fixed":
+        message = `Apply €${coupon.value} discount`;
+        break;
+      default:
+        message = "Special offer applied";
+    }
+
+    const validationData = {
+      redemption_id: redemption.id,
+      coupon: {
+        id: coupon.id,
+        name: coupon.description || `${coupon.type} coupon`,
+        description: coupon.description,
+        type: coupon.type,
+        value: coupon.value,
+        min_purchase_amount: coupon.min_purchase_amount || 0,
+        max_discount_amount: coupon.max_discount_amount,
+      },
+      shop: {
+        id: shop.id,
+        name: shop.name,
+      },
+      valid: true,
+      message: `Coupon redeemed successfully. ${message}`,
+    };
+
+    logger.info(
+      `Coupon redeemed successfully: ${redemption_id} for shop: ${shop_id}`
+    );
+    return c.json(
+      standardResponse(
+        200,
+        "Coupon validated and redeemed successfully",
+        validationData
+      )
+    );
+  } catch (error) {
+    logger.error("Error validating coupon:", error);
     return c.json(standardResponse(500, "Internal server error"), 500);
   }
 });

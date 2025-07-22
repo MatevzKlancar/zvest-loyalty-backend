@@ -38,12 +38,12 @@ const updateShopSchema = z.object({
 
 const createCouponSchema = z.object({
   code: z.string().min(1, "Coupon code is required"),
-  type: z.enum(["percentage", "fixed", "free_item", "points_multiplier"]),
+  type: z.enum(["percentage", "fixed"]),
   value: z.number().min(0, "Value must be positive"),
   points_required: z.number().min(0, "Points required must be positive"),
   discount_percentage: z.number().min(1).max(100).optional(),
   description: z.string().optional(),
-  terms_conditions: z.string().optional(),
+
   category: z.string().default("general"),
   min_purchase_amount: z.number().min(0).default(0),
   max_discount_amount: z.number().min(0).optional(),
@@ -83,9 +83,7 @@ const couponResponseSchema = z.object({
   type: z.string(),
   value: z.number(),
   points_required: z.number().nullable(),
-  discount_percentage: z.number().nullable(),
   description: z.string().nullable(),
-  terms_conditions: z.string().nullable(),
   category: z.string(),
   min_purchase_amount: z.number(),
   max_discount_amount: z.number().nullable(),

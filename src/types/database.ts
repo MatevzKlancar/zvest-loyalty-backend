@@ -220,7 +220,7 @@ export interface Database {
           id: string;
           shop_id: string;
           code: string;
-          type: "percentage" | "fixed" | "free_item";
+          type: "percentage" | "fixed";
           value: number;
           description: string | null;
           expires_at: string | null;
@@ -234,7 +234,7 @@ export interface Database {
           id?: string;
           shop_id: string;
           code: string;
-          type: "percentage" | "fixed" | "free_item";
+          type: "percentage" | "fixed";
           value: number;
           description?: string | null;
           expires_at?: string | null;
@@ -248,7 +248,7 @@ export interface Database {
           id?: string;
           shop_id?: string;
           code?: string;
-          type?: "percentage" | "fixed" | "free_item";
+          type?: "percentage" | "fixed";
           value?: number;
           description?: string | null;
           expires_at?: string | null;

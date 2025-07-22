@@ -123,14 +123,14 @@ x-api-key: {{apiKey}}
 GET {{baseURL}}/api/pos/shops/123e4567-e89b-12d3-a456-426614174000/coupons
 x-api-key: {{apiKey}}
 
-### Validate and use coupon
+### Validate and redeem coupon via QR scan (5 minute expiry)
 POST {{baseURL}}/api/pos/coupons/validate
 x-api-key: {{apiKey}}
 Content-Type: application/json
 
 {
   "shop_id": "123e4567-e89b-12d3-a456-426614174000",
-  "coupon_id": "123e4567-e89b-12d3-a456-426614174001"
+  "redemption_id": "394750"
 }
 
 ### Create transaction
@@ -163,6 +163,15 @@ Content-Type: application/json
 ##########################################################
 # Customer App Endpoints
 ##########################################################
+
+### Activate coupon (redeem points for QR code - 5 min expiry)
+POST {{baseURL}}/api/app/coupons/123e4567-e89b-12d3-a456-426614174000/activate
+Content-Type: application/json
+
+{
+  "customer_email": "customer@example.com",
+  "customer_phone": "+1234567890"
+}
 
 ### Scan QR code from receipt to award loyalty
 POST {{baseURL}}/api/customers/scan

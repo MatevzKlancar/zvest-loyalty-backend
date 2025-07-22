@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS coupons (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
     code VARCHAR UNIQUE NOT NULL,
-    type VARCHAR NOT NULL CHECK (type IN ('percentage', 'fixed', 'free_item', 'points_multiplier')),
+    type VARCHAR NOT NULL CHECK (type IN ('percentage', 'fixed')),
     value DECIMAL(10,2) NOT NULL CHECK (value >= 0),
     description TEXT,
     min_purchase_amount DECIMAL(10,2) DEFAULT 0,
