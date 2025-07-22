@@ -91,15 +91,8 @@ const transactionResponseSchema = z.object({
   total_amount: z.number(),
   status: z.string(),
   qr_code_data: z.string(),
-  created_at: z.string(),
-});
-
-const qrDataResponseSchema = z.object({
-  qr_code_data: z.string(),
   display_text: z.string(),
-  transaction_id: z.string().uuid(),
-  shop_name: z.string(),
-  total_amount: z.number(),
+  created_at: z.string(),
 });
 
 const couponResponseSchema = z.object({
@@ -556,6 +549,8 @@ curl -X POST https://zvest-loyalty-backend.onrender.com/api/pos/transactions \\
                   total_amount: 15.5,
                   status: "pending",
                   qr_code_data: "PLT_456e7890-e89b-12d3-a456-426614174111",
+                  display_text:
+                    "Scan for loyalty points\nInvoice: INV-2024-001",
                   created_at: "2024-01-15T14:25:00Z",
                 },
               },
@@ -663,94 +658,23 @@ pos.openapi(createTransactionRoute, async (c) => {
       return c.json(standardResponse(500, "Failed to create transaction"), 500);
     }
 
+    // Add display text for receipt printing
+    const transactionWithDisplayText = {
+      ...transaction,
+      display_text: `Scan for loyalty points\nInvoice: ${transaction.pos_invoice_id}`,
+    };
+
     logger.info(`Transaction created successfully: ${transaction.id}`);
     return c.json(
-      standardResponse(201, "Transaction created successfully", transaction),
+      standardResponse(
+        201,
+        "Transaction created successfully",
+        transactionWithDisplayText
+      ),
       201
     );
   } catch (error) {
     logger.error("Error creating transaction:", error);
-    return c.json(standardResponse(500, "Internal server error"), 500);
-  }
-});
-
-// Step 5: Get QR code data for receipt printing
-const getQRDataRoute = createRoute({
-  method: "get",
-  path: "/transactions/{transaction_id}/qr-data",
-  summary: "Get QR code data for receipt",
-  description: "Returns QR code data and display text for receipt printing",
-  tags: ["POS Integration"],
-  security: [{ ApiKeyAuth: [] }],
-  request: {
-    params: z.object({
-      transaction_id: z.string().uuid("Invalid transaction ID"),
-    }),
-  },
-  responses: {
-    200: {
-      description: "QR data retrieved successfully",
-      content: {
-        "application/json": {
-          schema: z.object({
-            success: z.boolean(),
-            message: z.string(),
-            data: qrDataResponseSchema,
-          }),
-        },
-      },
-    },
-  },
-});
-
-pos.openapi(getQRDataRoute, async (c) => {
-  try {
-    const { transaction_id } = c.req.valid("param");
-    const posProvider = c.get("posProvider");
-
-    // Get transaction with shop info
-    const { data: transaction, error } = await supabase
-      .from("transactions")
-      .select(
-        `
-        id,
-        shop_id,
-        pos_invoice_id,
-        total_amount,
-        qr_code_data,
-        status,
-        shops (
-          name,
-          pos_provider_id
-        )
-      `
-      )
-      .eq("id", transaction_id)
-      .single();
-
-    if (error || !transaction) {
-      return c.json(standardResponse(404, "Transaction not found"), 404);
-    }
-
-    // Verify transaction belongs to this POS provider
-    const shop = transaction.shops as any;
-    if (shop.pos_provider_id !== posProvider.id) {
-      return c.json(standardResponse(403, "Access denied"), 403);
-    }
-
-    const qrData = {
-      qr_code_data: transaction.qr_code_data,
-      display_text: `Scan for loyalty points\nInvoice: ${transaction.pos_invoice_id}`,
-      transaction_id: transaction.id,
-      shop_name: shop.name,
-      total_amount: transaction.total_amount,
-    };
-
-    return c.json(
-      standardResponse(200, "QR data retrieved successfully", qrData)
-    );
-  } catch (error) {
-    logger.error("Error getting QR data:", error);
     return c.json(standardResponse(500, "Internal server error"), 500);
   }
 });
@@ -1158,6 +1082,305 @@ pos.openapi(validateCouponRoute, async (c) => {
     );
   } catch (error) {
     logger.error("Error validating coupon:", error);
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
+// STORNO endpoint - Cancel/reverse transaction and remove awarded points
+const stornoTransactionSchema = z.object({
+  pos_invoice_id: z.string().min(1, "POS invoice ID is required"),
+  reason: z.string().optional(), // Optional reason for cancellation
+});
+
+const stornoResponseSchema = z.object({
+  pos_invoice_id: z.string(),
+});
+
+const stornoTransactionRoute = createRoute({
+  method: "post",
+  path: "/transactions/storno",
+  summary: "Cancel/reverse transaction (STORNO)",
+  description: `
+Cancels a transaction and reverses any loyalty benefits that were awarded. This is typically used when a sale needs to be voided due to staff errors.
+
+**Process Flow:**
+1. POS system needs to cancel a transaction due to error
+2. POS calls this endpoint with the invoice ID
+3. System finds the transaction and checks its current status
+4. If loyalty points/stamps were awarded, they are deducted from customer account
+5. Transaction is marked as cancelled and logged
+
+**Important Notes:**
+- Only transactions in 'pending' or 'completed' status can be cancelled
+- If customer already scanned QR and received points, those points will be deducted
+- If customer has insufficient points balance, the operation will still proceed (balance can go negative)
+- All changes are logged for audit purposes
+- Cannot reverse transactions that are already cancelled or refunded
+
+ **Example Usage:**
+ \`\`\`bash
+ curl -X POST https://zvest-loyalty-backend.onrender.com/api/pos/transactions/storno \\
+   -H "Content-Type: application/json" \\
+   -H "X-API-Key: your-api-key" \\
+   -d '{
+     "pos_invoice_id": "INV-2024-001",
+     "reason": "Staff error - wrong items entered"
+   }'
+ \`\`\`
+ 
+ **Example Response:**
+ \`\`\`json
+ {
+   "success": true,
+   "message": "Transaction cancelled successfully and reversed 50 points",
+   "data": {
+     "pos_invoice_id": "INV-2024-001"
+   }
+ }
+ \`\`\`
+  `,
+  tags: ["POS Integration"],
+  security: [{ ApiKeyAuth: [] }],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: stornoTransactionSchema.openapi({
+            example: {
+              pos_invoice_id: "INV-2024-001",
+              reason: "Staff error - wrong items entered",
+            },
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Transaction cancelled successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: stornoResponseSchema,
+          }),
+        },
+      },
+    },
+    404: {
+      description: "Transaction not found",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean().default(false),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: "Transaction cannot be cancelled",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean().default(false),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+  },
+});
+
+pos.openapi(stornoTransactionRoute, async (c) => {
+  try {
+    const { pos_invoice_id, reason } = c.req.valid("json");
+    const posProvider = c.get("posProvider");
+
+    // Find the transaction and verify it belongs to this POS provider
+    const { data: transaction, error: transactionError } = await supabase
+      .from("transactions")
+      .select(
+        `
+        id,
+        shop_id,
+        pos_invoice_id,
+        total_amount,
+        app_user_id,
+        loyalty_account_id,
+        loyalty_points_awarded,
+        loyalty_stamps_awarded,
+        status,
+        qr_scanned_at,
+        created_at,
+        shops!inner(
+          id,
+          name,
+          pos_provider_id
+        )
+      `
+      )
+      .eq("pos_invoice_id", pos_invoice_id)
+      .eq("shops.pos_provider_id", posProvider.id)
+      .single();
+
+    if (transactionError || !transaction) {
+      return c.json(
+        standardResponse(404, "Transaction not found or access denied"),
+        404
+      );
+    }
+
+    const previousStatus = transaction.status;
+
+    // Check if transaction can be cancelled
+    if (
+      transaction.status === "cancelled" ||
+      transaction.status === "refunded"
+    ) {
+      return c.json(
+        standardResponse(400, `Transaction is already ${transaction.status}`),
+        400
+      );
+    }
+
+    // Track what we're reversing
+    let pointsReversed = 0;
+    let stampsReversed = 0;
+    let amountReversed = 0;
+
+    // Only reverse points if customer actually scanned the QR code (qr_scanned_at is not null)
+    // This means the customer received the points and we need to deduct them
+    if (
+      transaction.app_user_id &&
+      transaction.loyalty_account_id &&
+      transaction.qr_scanned_at
+    ) {
+      const pointsToReverse = transaction.loyalty_points_awarded || 0;
+      const stampsToReverse = transaction.loyalty_stamps_awarded || 0;
+      const totalAmountToReverse = transaction.total_amount || 0;
+
+      if (pointsToReverse > 0 || stampsToReverse > 0) {
+        // Get current loyalty account balance
+        const { data: loyaltyAccount, error: accountError } = await supabase
+          .from("customer_loyalty_accounts")
+          .select("points_balance, stamps_count, visits_count, total_spent")
+          .eq("id", transaction.loyalty_account_id)
+          .single();
+
+        if (accountError) {
+          logger.error("Failed to get loyalty account:", accountError);
+          return c.json(
+            standardResponse(500, "Failed to access loyalty account"),
+            500
+          );
+        }
+
+        // Calculate new balances (allow negative balances)
+        const newPointsBalance =
+          (loyaltyAccount.points_balance || 0) - pointsToReverse;
+        const newStampsCount = Math.max(
+          0,
+          (loyaltyAccount.stamps_count || 0) - stampsToReverse
+        );
+        const newVisitsCount = Math.max(
+          0,
+          (loyaltyAccount.visits_count || 0) - 1
+        );
+        const newTotalSpent = Math.max(
+          0,
+          (loyaltyAccount.total_spent || 0) - totalAmountToReverse
+        );
+
+        // Update loyalty account
+        const { error: updateAccountError } = await supabase
+          .from("customer_loyalty_accounts")
+          .update({
+            points_balance: newPointsBalance,
+            stamps_count: newStampsCount,
+            visits_count: newVisitsCount,
+            total_spent: newTotalSpent,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", transaction.loyalty_account_id);
+
+        if (updateAccountError) {
+          logger.error("Failed to update loyalty account:", updateAccountError);
+          return c.json(
+            standardResponse(500, "Failed to reverse loyalty benefits"),
+            500
+          );
+        }
+
+        pointsReversed = pointsToReverse;
+        stampsReversed = stampsToReverse;
+        amountReversed = totalAmountToReverse;
+
+        logger.info(
+          `Reversed loyalty benefits: ${pointsToReverse} points, ${stampsToReverse} stamps for transaction ${transaction.id}`
+        );
+      }
+    }
+
+    // Update transaction status to cancelled
+    const { error: updateTransactionError } = await supabase
+      .from("transactions")
+      .update({
+        status: "cancelled",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", transaction.id);
+
+    if (updateTransactionError) {
+      logger.error(
+        "Failed to update transaction status:",
+        updateTransactionError
+      );
+      return c.json(standardResponse(500, "Failed to cancel transaction"), 500);
+    }
+
+    // Log the storno action
+    const logDetails = {
+      reason: reason || "POS storno operation",
+      previous_status: previousStatus,
+      points_reversed: pointsReversed,
+      stamps_reversed: stampsReversed,
+      amount_reversed: amountReversed,
+      pos_provider_id: posProvider.id,
+      pos_provider_name: posProvider.name,
+    };
+
+    const { error: logError } = await supabase.from("transaction_logs").insert({
+      transaction_id: transaction.id,
+      action: "storno",
+      details: logDetails,
+      performed_by: `POS Provider: ${posProvider.name}`,
+    });
+
+    if (logError) {
+      logger.error("Failed to log storno action:", logError);
+      // Don't fail the operation, just log the error
+    }
+
+    // Generate response message
+    let message = `Transaction cancelled successfully`;
+    if (pointsReversed > 0 || stampsReversed > 0) {
+      const benefits: string[] = [];
+      if (pointsReversed > 0) benefits.push(`${pointsReversed} points`);
+      if (stampsReversed > 0) benefits.push(`${stampsReversed} stamps`);
+      message += ` and reversed ${benefits.join(" and ")}`;
+    }
+
+    const responseData = {
+      pos_invoice_id: transaction.pos_invoice_id,
+    };
+
+    logger.info(`Transaction storno completed: ${pos_invoice_id} - ${message}`);
+
+    return c.json(standardResponse(200, message, responseData));
+  } catch (error) {
+    logger.error("Error processing storno:", error);
     return c.json(standardResponse(500, "Internal server error"), 500);
   }
 });
