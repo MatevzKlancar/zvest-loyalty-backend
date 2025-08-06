@@ -42,6 +42,7 @@ const completeOnboardingSchema = z.object({
       website: z.string().url().optional(),
       opening_hours: z.string().optional(),
       loyalty_type: z.enum(["points", "coupons"]).default("points"),
+      tag: z.string().optional(),
     })
     .optional(),
 });

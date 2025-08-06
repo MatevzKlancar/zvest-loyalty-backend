@@ -23,6 +23,7 @@ const storeResponseSchema = z.object({
   type: z.string().nullable(),
   status: z.string(),
   image_url: z.string().nullable(),
+  tag: z.string().nullable(),
   created_at: z.string(),
 });
 
@@ -147,6 +148,7 @@ publicRoutes.openapi(getStoresRoute, async (c) => {
         type,
         status,
         image_url,
+        tag,
         created_at
       `
       )
@@ -274,6 +276,7 @@ publicRoutes.openapi(getStoreByIdRoute, async (c) => {
         type,
         status,
         image_url,
+        tag,
         social_media,
         created_at,
         loyalty_programs (

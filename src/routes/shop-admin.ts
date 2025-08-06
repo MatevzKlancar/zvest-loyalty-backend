@@ -23,9 +23,15 @@ const updateShopSchema = z.object({
   phone: z.string().optional(),
   email: z.string().email().optional(),
   website: z.string().url().optional(),
-  loyalty_type: z.enum(["points", "coupons"]).optional(),
+  loyalty_type: z
+    .union([
+      z.enum(["points", "coupons"]),
+      z.literal("").transform(() => undefined),
+    ])
+    .optional(),
   opening_hours: z.string().optional(), // Simple string like "Mon-Fri: 9:00-18:00, Sat: 10:00-16:00, Sun: Closed"
   image_url: z.string().url().optional(),
+  tag: z.string().optional(),
   social_media: z
     .object({
       facebook: z.string().optional(),
@@ -70,6 +76,7 @@ const shopResponseSchema = z.object({
   loyalty_type: z.string().nullable(),
   opening_hours: z.string().nullable(),
   image_url: z.string().nullable(),
+  tag: z.string().nullable(),
   social_media: z.record(z.any()).nullable(),
   status: z.string(),
   created_at: z.string(),
@@ -139,6 +146,7 @@ shopAdmin.openapi(getShopRoute, async (c) => {
         loyalty_type,
         opening_hours,
         image_url,
+        tag,
         social_media,
         status,
         created_at,
