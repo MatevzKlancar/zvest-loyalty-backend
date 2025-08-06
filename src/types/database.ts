@@ -30,44 +30,88 @@ export interface Database {
       shops: {
         Row: {
           id: string;
+          customer_id: string;
           pos_provider_id: string;
           pos_shop_id: string | null;
           name: string;
           description: string | null;
+          address: string | null;
+          phone: string | null;
+          email: string | null;
+          website: string | null;
           type: string | null;
+          loyalty_type: "points" | "coupons";
+          points_per_euro: number | null;
+          opening_hours: string | null;
+          social_media: any | null;
           image_url: string | null;
-          status: "pending" | "active" | "suspended" | "inactive";
+          tag: string | null;
+          status:
+            | "pending"
+            | "pending_setup"
+            | "active"
+            | "suspended"
+            | "inactive";
+          owner_user_id: string | null;
           approved_by: string | null;
           approved_at: string | null;
           pos_synced_at: string | null;
           pos_sync_data: any | null;
+          settings: any | null;
           created_at: string;
           updated_at: string;
         };
         Insert: {
           id?: string;
+          customer_id: string;
           pos_provider_id: string;
           pos_shop_id?: string | null;
           name: string;
           description?: string | null;
+          address?: string | null;
+          phone?: string | null;
+          email?: string | null;
+          website?: string | null;
           type?: string | null;
+          loyalty_type?: "points" | "coupons";
+          points_per_euro?: number | null;
+          opening_hours?: string | null;
+          social_media?: any | null;
           image_url?: string | null;
-          status?: "pending" | "active" | "suspended" | "inactive";
+          tag?: string | null;
+          status?:
+            | "pending"
+            | "pending_setup"
+            | "active"
+            | "suspended"
+            | "inactive";
+          owner_user_id?: string | null;
           approved_by?: string | null;
           approved_at?: string | null;
           pos_synced_at?: string | null;
           pos_sync_data?: any | null;
+          settings?: any | null;
           created_at?: string;
           updated_at?: string;
         };
         Update: {
           id?: string;
+          customer_id?: string;
           pos_provider_id?: string;
           pos_shop_id?: string | null;
           name?: string;
           description?: string | null;
+          address?: string | null;
+          phone?: string | null;
+          email?: string | null;
+          website?: string | null;
           type?: string | null;
+          loyalty_type?: "points" | "coupons";
+          points_per_euro?: number | null;
+          opening_hours?: string | null;
+          social_media?: any | null;
           image_url?: string | null;
+          tag?: string | null;
           status?: "pending" | "active" | "suspended" | "inactive";
           approved_by?: string | null;
           approved_at?: string | null;
@@ -223,6 +267,7 @@ export interface Database {
           type: "percentage" | "fixed";
           value: number;
           description: string | null;
+          article_id: string | null;
           expires_at: string | null;
           usage_limit: number | null;
           used_count: number;
@@ -237,6 +282,7 @@ export interface Database {
           type: "percentage" | "fixed";
           value: number;
           description?: string | null;
+          article_id?: string | null;
           expires_at?: string | null;
           usage_limit?: number | null;
           used_count?: number;
@@ -251,6 +297,7 @@ export interface Database {
           type?: "percentage" | "fixed";
           value?: number;
           description?: string | null;
+          article_id?: string | null;
           expires_at?: string | null;
           usage_limit?: number | null;
           used_count?: number;

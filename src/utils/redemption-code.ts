@@ -2,13 +2,20 @@ import { supabase } from "../config/database";
 import { logger } from "../config/logger";
 
 /**
- * Generates a cryptographically secure 6-digit redemption code
- * Examples: "394750", "847293", "012845"
+ * Generates a McDonald's style redemption code
+ * Examples: "N21-555", "K45-123", "A07-999"
+ * Format: [Letter][2-digits]-[3-digits]
  */
 export function generateSecureRedemptionCode(): string {
-  return Math.floor(Math.random() * 1000000)
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const letter = letters[Math.floor(Math.random() * letters.length)];
+  const firstPart = Math.floor(Math.random() * 100)
     .toString()
-    .padStart(6, "0");
+    .padStart(2, "0");
+  const secondPart = Math.floor(Math.random() * 1000)
+    .toString()
+    .padStart(3, "0");
+  return `${letter}${firstPart}-${secondPart}`;
 }
 
 /**
@@ -73,10 +80,11 @@ export async function generateUniqueRedemptionCode(
 }
 
 /**
- * Validates redemption code format (6 digits)
+ * Validates redemption code format (McDonald's style: Letter + 2 digits + dash + 3 digits)
+ * Examples: "N21-555", "K45-123", "A07-999"
  */
 export function isValidRedemptionCodeFormat(code: string): boolean {
-  return /^\d{6}$/.test(code);
+  return /^[A-Z]\d{2}-\d{3}$/.test(code);
 }
 
 /**

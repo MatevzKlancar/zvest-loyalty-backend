@@ -100,14 +100,9 @@ const couponResponseSchema = z.object({
   code: z.string(),
   type: z.string(),
   value: z.number(),
-  discount_percentage: z.number().nullable(),
+  name: z.string(),
   description: z.string().nullable(),
-  terms_conditions: z.string().nullable(),
-  category: z.string(),
-  min_purchase_amount: z.number(),
-  max_discount_amount: z.number().nullable(),
   expires_at: z.string().nullable(),
-  usage_limit: z.number().nullable(),
   used_count: z.number(),
   points_required: z.number().nullable(),
   is_active: z.boolean(),
@@ -121,8 +116,7 @@ const validatedCouponResponseSchema = z.object({
     description: z.string().nullable(),
     type: z.string(), // "percentage" or "fixed"
     value: z.number(), // Interpreted based on type
-    min_purchase_amount: z.number(),
-    max_discount_amount: z.number().nullable(),
+    article_id: z.string().uuid().nullable(), // null = applies to whole invoice
   }),
   shop: z.object({
     id: z.string().uuid(),
@@ -867,10 +861,29 @@ Validates a coupon redemption ID from QR code scan and applies the discount if v
 4. System checks validity (5 minute expiry) and marks as used
 5. Returns discount amount and coupon details for POS to apply
 
+**Coupon Types:**
+- **Global Coupons** (\`article_id: null\`): Apply discount to entire invoice
+- **Article-Specific Coupons** (\`article_id: "uuid"\`): Apply discount only to specific item
+
+**POS Integration Logic:**
+\`\`\`javascript
+if (coupon.article_id === null) {
+  // Apply discount to total invoice
+  totalDiscount = calculateDiscount(invoiceTotal, coupon.type, coupon.value);
+} else {
+  // Apply discount only to specific article
+  const targetItem = items.find(item => item.pos_article_id === coupon.article_id);
+  if (targetItem) {
+    itemDiscount = calculateDiscount(targetItem.total_price, coupon.type, coupon.value);
+  }
+}
+\`\`\`
+
 **Important Notes:**
 - Coupon redemptions expire after 5 minutes
 - Once validated, coupon is marked as "used" and cannot be reused
 - Discount percentage is returned as 0-100 (e.g., 20 = 20% off)
+- Check \`article_id\` to determine discount scope
   `,
   tags: ["POS Integration"],
   security: [{ ApiKeyAuth: [] }],
@@ -898,6 +911,59 @@ Validates a coupon redemption ID from QR code scan and applies the discount if v
             message: z.string(),
             data: validatedCouponResponseSchema,
           }),
+          examples: {
+            globalCoupon: {
+              summary: "Global Coupon (applies to entire invoice)",
+              value: {
+                success: true,
+                message: "Coupon validated and redeemed successfully",
+                data: {
+                  redemption_id: "394750",
+                  coupon: {
+                    id: "123e4567-e89b-12d3-a456-426614174000",
+                    name: "20% Off Everything",
+                    description: "Store-wide discount",
+                    type: "percentage",
+                    value: 20,
+                    article_id: null, // Global coupon
+                  },
+                  shop: {
+                    id: "456e7890-e89b-12d3-a456-426614174111",
+                    name: "Fashion Boutique",
+                  },
+                  valid: true,
+                  message:
+                    "Coupon redeemed successfully. Apply 20% discount (applies to entire order)",
+                },
+              },
+            },
+            articleSpecificCoupon: {
+              summary:
+                "Article-Specific Coupon (applies to specific item only)",
+              value: {
+                success: true,
+                message: "Coupon validated and redeemed successfully",
+                data: {
+                  redemption_id: "394750",
+                  coupon: {
+                    id: "789a0123-e89b-12d3-a456-426614174222",
+                    name: "Free Pizza Discount",
+                    description: "Get €3.50 off Pica mehiška",
+                    type: "fixed",
+                    value: 3.5,
+                    article_id: "027a689b-0d35-4234-a7d9-628b99ed6d64", // Specific to "Pica mehiška"
+                  },
+                  shop: {
+                    id: "456e7890-e89b-12d3-a456-426614174111",
+                    name: "Fashion Boutique",
+                  },
+                  valid: true,
+                  message:
+                    "Coupon redeemed successfully. Apply €3.50 discount (applies to specific item only)",
+                },
+              },
+            },
+          },
         },
       },
     },
@@ -963,10 +1029,10 @@ pos.openapi(validateCouponRoute, async (c) => {
           shop_id,
           type,
           value,
+          name,
           description,
-          expires_at,
-          min_purchase_amount,
-          max_discount_amount
+          article_id,
+          expires_at
         )
       `
       )
@@ -1051,23 +1117,30 @@ pos.openapi(validateCouponRoute, async (c) => {
         message = "Special offer applied";
     }
 
+    // Generate message based on coupon scope
+    let scopeMessage = "";
+    if (coupon.article_id) {
+      scopeMessage = " (applies to specific item only)";
+    } else {
+      scopeMessage = " (applies to entire order)";
+    }
+
     const validationData = {
       redemption_id: redemption.id,
       coupon: {
         id: coupon.id,
-        name: coupon.description || `${coupon.type} coupon`,
+        name: coupon.name,
         description: coupon.description,
         type: coupon.type,
         value: coupon.value,
-        min_purchase_amount: coupon.min_purchase_amount || 0,
-        max_discount_amount: coupon.max_discount_amount,
+        article_id: coupon.article_id, // null = whole invoice, UUID = specific article
       },
       shop: {
         id: shop.id,
         name: shop.name,
       },
       valid: true,
-      message: `Coupon redeemed successfully. ${message}`,
+      message: `Coupon redeemed successfully. ${message}${scopeMessage}`,
     };
 
     logger.info(

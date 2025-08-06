@@ -239,6 +239,7 @@ admin.openapi(simpleB2bOnboardingRoute, async (c) => {
         email: data.contact_email,
         phone: data.contact_phone,
         loyalty_type: data.loyalty_type,
+        points_per_euro: data.loyalty_type === "points" ? 100 : null, // 100 points per euro default
         status: "pending",
         settings: {
           created_via: "simple_onboarding",

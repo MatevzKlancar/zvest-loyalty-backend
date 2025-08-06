@@ -29,36 +29,29 @@ const updateShopSchema = z.object({
       z.literal("").transform(() => undefined),
     ])
     .optional(),
+  points_per_euro: z.number().int().min(1).max(1000).optional(),
   opening_hours: z.string().optional(), // Simple string like "Mon-Fri: 9:00-18:00, Sat: 10:00-16:00, Sun: Closed"
   image_url: z.string().url().optional(),
   tag: z.string().optional(),
-  social_media: z
-    .object({
-      facebook: z.string().optional(),
-      instagram: z.string().optional(),
-      twitter: z.string().optional(),
-      website: z.string().optional(),
-    })
-    .optional(),
 });
 
 const createCouponSchema = z.object({
-  code: z.string().min(1, "Coupon code is required"),
   type: z.enum(["percentage", "fixed"]),
   value: z.number().min(0, "Value must be positive"),
   points_required: z.number().min(0, "Points required must be positive"),
-  discount_percentage: z.number().min(1).max(100).optional(),
+  name: z.string().min(1, "Coupon name is required"),
   description: z.string().optional(),
-
-  category: z.string().default("general"),
-  min_purchase_amount: z.number().min(0).default(0),
-  max_discount_amount: z.number().min(0).optional(),
-  expires_at: z.string().datetime().optional(),
-  usage_limit: z.number().min(1).optional(),
-  image_url: z.string().url().optional(),
+  article_id: z.string().uuid().optional(), // Optional - if null, applies to whole invoice
+  expires_at: z
+    .union([z.string().datetime(), z.literal("").transform(() => undefined)])
+    .optional(),
+  image_url: z
+    .union([z.string().url(), z.literal("").transform(() => undefined)])
+    .optional(),
+  is_active: z.boolean().default(true),
 });
 
-const updateCouponSchema = createCouponSchema.partial().omit({ code: true });
+const updateCouponSchema = createCouponSchema.partial();
 
 const uploadImageSchema = z.object({
   image_url: z.string().url("Invalid image URL format"),
@@ -74,10 +67,10 @@ const shopResponseSchema = z.object({
   website: z.string().nullable(),
   type: z.string().nullable(),
   loyalty_type: z.string().nullable(),
+  points_per_euro: z.number().nullable(),
   opening_hours: z.string().nullable(),
   image_url: z.string().nullable(),
   tag: z.string().nullable(),
-  social_media: z.record(z.any()).nullable(),
   status: z.string(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -90,12 +83,10 @@ const couponResponseSchema = z.object({
   type: z.string(),
   value: z.number(),
   points_required: z.number().nullable(),
+  name: z.string(),
   description: z.string().nullable(),
-  category: z.string(),
-  min_purchase_amount: z.number(),
-  max_discount_amount: z.number().nullable(),
+  article_id: z.string().uuid().nullable(),
   expires_at: z.string().nullable(),
-  usage_limit: z.number().nullable(),
   used_count: z.number(),
   image_url: z.string().nullable(),
   is_active: z.boolean(),
@@ -144,10 +135,10 @@ shopAdmin.openapi(getShopRoute, async (c) => {
         website,
         type,
         loyalty_type,
+        points_per_euro,
         opening_hours,
         image_url,
         tag,
-        social_media,
         status,
         created_at,
         updated_at
@@ -209,6 +200,37 @@ shopAdmin.openapi(updateShopRoute, async (c) => {
     const shop = c.get("shop");
     const updateData = c.req.valid("json");
 
+    // Validation: If loyalty_type is being set to "points", ensure points_per_euro is provided
+    if (updateData.loyalty_type === "points") {
+      if (
+        !updateData.points_per_euro &&
+        (!shop.points_per_euro || shop.points_per_euro <= 0)
+      ) {
+        return c.json(
+          standardResponse(
+            400,
+            "points_per_euro is required when loyalty_type is 'points'"
+          ),
+          400
+        );
+      }
+    }
+
+    // If loyalty_type is already "points" and we're updating points_per_euro, validate it
+    if (
+      shop.loyalty_type === "points" &&
+      updateData.points_per_euro !== undefined &&
+      updateData.points_per_euro <= 0
+    ) {
+      return c.json(
+        standardResponse(
+          400,
+          "points_per_euro must be greater than 0 for points-based loyalty"
+        ),
+        400
+      );
+    }
+
     const { data: updatedShop, error } = await supabase
       .from("shops")
       .update(updateData)
@@ -218,7 +240,12 @@ shopAdmin.openapi(updateShopRoute, async (c) => {
 
     if (error) {
       logger.error("Failed to update shop:", error);
-      return c.json(standardResponse(500, "Failed to update shop"), 500);
+      logger.error("Update data was:", updateData);
+      logger.error("Shop ID:", shop.id);
+      return c.json(
+        standardResponse(500, `Failed to update shop: ${error.message}`),
+        500
+      );
     }
 
     logger.info(`Shop updated successfully: ${shop.id}`);
@@ -296,6 +323,108 @@ shopAdmin.openapi(uploadShopImageRoute, async (c) => {
   }
 });
 
+// Get all articles for shop
+const getArticlesRoute = createRoute({
+  method: "get",
+  path: "/articles",
+  summary: "Get shop articles",
+  description: "Get all articles/menu items for the current shop",
+  tags: ["Shop Management"],
+  security: [{ BearerAuth: [] }],
+  request: {
+    query: z.object({
+      active_only: z.string().optional(),
+      category: z.string().optional(),
+      limit: z.string().optional(),
+      offset: z.string().optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Articles retrieved successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.array(
+              z.object({
+                id: z.string().uuid(),
+                pos_article_id: z.string(),
+                name: z.string(),
+                base_price: z.number(),
+                description: z.string().nullable(),
+                category: z.string().nullable(),
+                type: z.string().nullable(),
+                tax_rate: z.number(),
+                is_active: z.boolean(),
+                created_at: z.string(),
+              })
+            ),
+            meta: z.object({
+              total: z.number(),
+              limit: z.number(),
+              offset: z.number(),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+shopAdmin.openapi(getArticlesRoute, async (c) => {
+  try {
+    const shop = c.get("shop");
+    const {
+      active_only,
+      category,
+      limit = "50",
+      offset = "0",
+    } = c.req.valid("query");
+
+    let query = supabase
+      .from("articles")
+      .select("*", { count: "exact" })
+      .eq("shop_id", shop.id);
+
+    if (active_only === "true") {
+      query = query.eq("is_active", true);
+    }
+
+    if (category) {
+      query = query.eq("category", category);
+    }
+
+    const {
+      data: articles,
+      error,
+      count,
+    } = await query
+      .order("created_at", { ascending: false })
+      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+
+    if (error) {
+      logger.error("Failed to fetch articles:", error);
+      return c.json(standardResponse(500, "Failed to fetch articles"), 500);
+    }
+
+    return c.json({
+      success: true,
+      message: "Articles retrieved successfully",
+      data: articles || [],
+      meta: {
+        total: count || 0,
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+      },
+    });
+  } catch (error) {
+    logger.error("Error fetching articles:", error);
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
 // Create coupon
 const createCouponRoute = createRoute({
   method: "post",
@@ -335,19 +464,24 @@ shopAdmin.openapi(createCouponRoute, async (c) => {
     const shop = c.get("shop");
     const couponData = c.req.valid("json");
 
-    // Check if coupon code already exists for this shop
-    const { data: existingCoupon } = await supabase
-      .from("coupons")
-      .select("id")
-      .eq("shop_id", shop.id)
-      .eq("code", couponData.code)
-      .single();
+    // If article_id is provided, verify it belongs to this shop
+    if (couponData.article_id) {
+      const { data: article, error: articleError } = await supabase
+        .from("articles")
+        .select("id")
+        .eq("id", couponData.article_id)
+        .eq("shop_id", shop.id)
+        .single();
 
-    if (existingCoupon) {
-      return c.json(
-        standardResponse(400, "Coupon code already exists for this shop"),
-        400
-      );
+      if (articleError || !article) {
+        return c.json(
+          standardResponse(
+            400,
+            "Article not found or does not belong to this shop"
+          ),
+          400
+        );
+      }
     }
 
     const { data: coupon, error } = await supabase
@@ -386,7 +520,6 @@ const getCouponsRoute = createRoute({
   request: {
     query: z.object({
       active_only: z.string().optional(),
-      category: z.string().optional(),
       limit: z.string().optional(),
       offset: z.string().optional(),
     }),
@@ -415,12 +548,7 @@ const getCouponsRoute = createRoute({
 shopAdmin.openapi(getCouponsRoute, async (c) => {
   try {
     const shop = c.get("shop");
-    const {
-      active_only,
-      category,
-      limit = "50",
-      offset = "0",
-    } = c.req.valid("query");
+    const { active_only, limit = "50", offset = "0" } = c.req.valid("query");
 
     let query = supabase
       .from("coupons")
@@ -429,10 +557,6 @@ shopAdmin.openapi(getCouponsRoute, async (c) => {
 
     if (active_only === "true") {
       query = query.eq("is_active", true);
-    }
-
-    if (category) {
-      query = query.eq("category", category);
     }
 
     const {
@@ -570,6 +694,26 @@ shopAdmin.openapi(updateCouponRoute, async (c) => {
 
     if (checkError || !existingCoupon) {
       return c.json(standardResponse(404, "Coupon not found"), 404);
+    }
+
+    // If article_id is being updated, verify it belongs to this shop
+    if (updateData.article_id) {
+      const { data: article, error: articleError } = await supabase
+        .from("articles")
+        .select("id")
+        .eq("id", updateData.article_id)
+        .eq("shop_id", shop.id)
+        .single();
+
+      if (articleError || !article) {
+        return c.json(
+          standardResponse(
+            400,
+            "Article not found or does not belong to this shop"
+          ),
+          400
+        );
+      }
     }
 
     const { data: coupon, error } = await supabase

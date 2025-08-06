@@ -226,12 +226,8 @@ app.openapi(scanQRRoute, async (c) => {
         shops (
           name,
           type,
-          loyalty_programs (
-            id,
-            type,
-            points_per_euro,
-            is_active
-          )
+          loyalty_type,
+          points_per_euro
         )
       `
       )
@@ -263,14 +259,18 @@ app.openapi(scanQRRoute, async (c) => {
     }
 
     const shop = transaction.shops as any;
-    const loyaltyPrograms = shop.loyalty_programs || [];
-    const activeLoyaltyProgram = loyaltyPrograms.find(
-      (lp: any) => lp.is_active
-    );
 
-    if (!activeLoyaltyProgram) {
+    // Check if shop has points-based loyalty system
+    if (shop.loyalty_type !== "points") {
       return c.json(
-        standardResponse(400, "No active loyalty program for this shop"),
+        standardResponse(400, "Shop does not use points-based loyalty system"),
+        400
+      );
+    }
+
+    if (!shop.points_per_euro || shop.points_per_euro <= 0) {
+      return c.json(
+        standardResponse(400, "Shop has not configured points per euro"),
         400
       );
     }
@@ -323,13 +323,12 @@ app.openapi(scanQRRoute, async (c) => {
     if (existingAccount) {
       loyaltyAccount = existingAccount;
     } else {
-      // Create new loyalty account
+      // Create new loyalty account (without loyalty_program_id for now)
       const { data: newAccount, error: accountError } = await supabase
         .from("customer_loyalty_accounts")
         .insert({
           app_user_id: appUser.id,
           shop_id: transaction.shop_id,
-          loyalty_program_id: activeLoyaltyProgram.id,
         })
         .select()
         .single();
@@ -346,12 +345,9 @@ app.openapi(scanQRRoute, async (c) => {
 
     // Calculate points to award
     let pointsToAward = 0;
-    if (
-      activeLoyaltyProgram.type === "points" &&
-      activeLoyaltyProgram.points_per_euro
-    ) {
+    if (shop.points_per_euro) {
       pointsToAward = Math.floor(
-        transaction.total_amount * activeLoyaltyProgram.points_per_euro
+        transaction.total_amount * shop.points_per_euro
       );
     }
 
@@ -526,8 +522,6 @@ const activatedCouponResponseSchema = z.object({
     value: z.number(),
     name: z.string().nullable(),
     description: z.string().nullable(),
-    min_purchase_amount: z.number(),
-    max_discount_amount: z.number().nullable(),
     expires_at: z.string().nullable(),
   }),
   shop: z.object({
@@ -659,11 +653,9 @@ app.openapi(activateCouponRoute, async (c) => {
         type,
         value,
         points_required,
+        name,
         description,
-        min_purchase_amount,
-        max_discount_amount,
         expires_at,
-        usage_limit,
         used_count,
         is_active,
         shops!inner (
@@ -689,14 +681,6 @@ app.openapi(activateCouponRoute, async (c) => {
     // Check if coupon has expired
     if (coupon.expires_at && new Date(coupon.expires_at) < new Date()) {
       return c.json(standardResponse(400, "Coupon has expired"), 400);
-    }
-
-    // Check if coupon usage limit has been reached
-    if (coupon.usage_limit && coupon.used_count >= coupon.usage_limit) {
-      return c.json(
-        standardResponse(400, "Coupon usage limit has been reached"),
-        400
-      );
     }
 
     // Get customer and loyalty account for this shop
@@ -854,14 +838,8 @@ app.openapi(activateCouponRoute, async (c) => {
           id: coupon.id,
           type: coupon.type,
           value: coupon.value,
-          name:
-            coupon.description ||
-            `${coupon.value}${
-              coupon.type === "percentage" ? "%" : "€"
-            } discount`,
+          name: coupon.name,
           description: coupon.description,
-          min_purchase_amount: coupon.min_purchase_amount || 0,
-          max_discount_amount: coupon.max_discount_amount,
           expires_at: coupon.expires_at,
         },
         shop: {

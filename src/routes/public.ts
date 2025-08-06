@@ -48,14 +48,9 @@ const couponResponseSchema = z.object({
   type: z.string(),
   value: z.number(),
   points_required: z.number().nullable(),
-  discount_percentage: z.number().nullable(),
+  name: z.string(),
   description: z.string().nullable(),
-  terms_conditions: z.string().nullable(),
-  category: z.string(),
-  min_purchase_amount: z.number(),
-  max_discount_amount: z.number().nullable(),
   expires_at: z.string().nullable(),
-  usage_limit: z.number().nullable(),
   used_count: z.number(),
   image_url: z.string().nullable(),
   is_active: z.boolean(),
@@ -337,7 +332,6 @@ curl -X GET 'https://your-api.com/api/public/stores/123e4567-e89b-12d3-a456-4266
       id: z.string().uuid("Invalid store ID"),
     }),
     query: z.object({
-      category: z.string().optional(),
       type: z.string().optional(),
       limit: z.string().optional(),
       offset: z.string().optional(),
@@ -379,7 +373,7 @@ curl -X GET 'https://your-api.com/api/public/stores/123e4567-e89b-12d3-a456-4266
 publicRoutes.openapi(getStoreCouponsRoute, async (c) => {
   try {
     const { id } = c.req.valid("param");
-    const { category, type, limit = "20", offset = "0" } = c.req.valid("query");
+    const { type, limit = "20", offset = "0" } = c.req.valid("query");
 
     const limitNum = parseInt(limit, 10) || 20;
     const offsetNum = parseInt(offset, 10) || 0;
@@ -405,10 +399,6 @@ publicRoutes.openapi(getStoreCouponsRoute, async (c) => {
       .order("created_at", { ascending: false });
 
     // Apply filters
-    if (category) {
-      query = query.eq("category", category);
-    }
-
     if (type) {
       query = query.eq("type", type);
     }
