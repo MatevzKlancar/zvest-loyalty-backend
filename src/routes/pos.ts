@@ -97,9 +97,14 @@ const transactionResponseSchema = z.object({
 
 const couponResponseSchema = z.object({
   id: z.string().uuid(),
-  code: z.string(),
   type: z.string(),
-  value: z.number(),
+  articles: z.array(
+    z.object({
+      article_id: z.string().uuid().nullable(),
+      article_name: z.string().nullable(),
+      discount_value: z.number(),
+    })
+  ),
   name: z.string(),
   description: z.string().nullable(),
   expires_at: z.string().nullable(),
@@ -115,8 +120,13 @@ const validatedCouponResponseSchema = z.object({
     name: z.string(), // description field as name
     description: z.string().nullable(),
     type: z.string(), // "percentage" or "fixed"
-    value: z.number(), // Interpreted based on type
-    article_id: z.string().uuid().nullable(), // null = applies to whole invoice
+    articles: z.array(
+      z.object({
+        article_id: z.string().uuid().nullable(), // null = applies to whole invoice
+        article_name: z.string().nullable(), // Article name for display, null for global coupons
+        discount_value: z.number(), // Percentage (0-100) or fixed amount, interpreted based on coupon.type
+      })
+    ),
   }),
   shop: z.object({
     id: z.string().uuid(),
@@ -837,8 +847,20 @@ pos.openapi(getShopCouponsRoute, async (c) => {
       return c.json(standardResponse(500, "Failed to fetch coupons"), 500);
     }
 
+    // Transform response to include articles array
+    const transformedCoupons =
+      coupons?.map((coupon) => ({
+        ...coupon,
+        articles: coupon.articles_data || [],
+        articles_data: undefined, // Remove from response
+      })) || [];
+
     return c.json(
-      standardResponse(200, "Shop coupons retrieved successfully", coupons)
+      standardResponse(
+        200,
+        "Shop coupons retrieved successfully",
+        transformedCoupons
+      )
     );
   } catch (error) {
     logger.error("Error fetching shop coupons:", error);
@@ -861,29 +883,35 @@ Validates a coupon redemption ID from QR code scan and applies the discount if v
 4. System checks validity (5 minute expiry) and marks as used
 5. Returns discount amount and coupon details for POS to apply
 
-**Coupon Types:**
-- **Global Coupons** (\`article_id: null\`): Apply discount to entire invoice
-- **Article-Specific Coupons** (\`article_id: "uuid"\`): Apply discount only to specific item
+**Coupon Structure:**
+All coupons now use a consistent \`articles\` array format:
+- **Global Coupons**: \`articles[0].article_id = null\` (applies to entire invoice)
+- **Single-Article Coupons**: \`articles[0].article_id = "uuid"\` (applies to specific item)
+- **Multi-Article Coupons**: Multiple items in \`articles\` array with different discount values
 
 **POS Integration Logic:**
 \`\`\`javascript
-if (coupon.article_id === null) {
-  // Apply discount to total invoice
-  totalDiscount = calculateDiscount(invoiceTotal, coupon.type, coupon.value);
-} else {
-  // Apply discount only to specific article
-  const targetItem = items.find(item => item.pos_article_id === coupon.article_id);
-  if (targetItem) {
-    itemDiscount = calculateDiscount(targetItem.total_price, coupon.type, coupon.value);
+// All coupons now use the articles array - simple and consistent!
+coupon.articles.forEach(article => {
+  if (article.article_id === null) {
+    // Apply to total invoice
+    totalDiscount = calculateDiscount(invoiceTotal, coupon.type, article.discount_value);
+  } else {
+    // Apply to specific article
+    const targetItem = items.find(item => item.pos_article_id === article.article_id);
+    if (targetItem) {
+      itemDiscount = calculateDiscount(targetItem.total_price, coupon.type, article.discount_value);
+    }
   }
-}
+});
 \`\`\`
 
 **Important Notes:**
 - Coupon redemptions expire after 5 minutes
 - Once validated, coupon is marked as "used" and cannot be reused
 - Discount percentage is returned as 0-100 (e.g., 20 = 20% off)
-- Check \`article_id\` to determine discount scope
+- All coupons use the \`articles\` array format for consistency
+- Same \`type\` (percentage/fixed) applies to all articles, but different \`discount_value\` per article
   `,
   tags: ["POS Integration"],
   security: [{ ApiKeyAuth: [] }],
@@ -924,8 +952,13 @@ if (coupon.article_id === null) {
                     name: "20% Off Everything",
                     description: "Store-wide discount",
                     type: "percentage",
-                    value: 20,
-                    article_id: null, // Global coupon
+                    articles: [
+                      {
+                        article_id: null, // Global coupon
+                        article_name: null, // No specific article name for global coupons
+                        discount_value: 20,
+                      },
+                    ],
                   },
                   shop: {
                     id: "456e7890-e89b-12d3-a456-426614174111",
@@ -950,8 +983,13 @@ if (coupon.article_id === null) {
                     name: "Free Pizza Discount",
                     description: "Get €3.50 off Pica mehiška",
                     type: "fixed",
-                    value: 3.5,
-                    article_id: "027a689b-0d35-4234-a7d9-628b99ed6d64", // Specific to "Pica mehiška"
+                    articles: [
+                      {
+                        article_id: "027a689b-0d35-4234-a7d9-628b99ed6d64", // Specific to "Pica mehiška"
+                        article_name: "Pica mehiška",
+                        discount_value: 3.5,
+                      },
+                    ],
                   },
                   shop: {
                     id: "456e7890-e89b-12d3-a456-426614174111",
@@ -960,6 +998,40 @@ if (coupon.article_id === null) {
                   valid: true,
                   message:
                     "Coupon redeemed successfully. Apply €3.50 discount (applies to specific item only)",
+                },
+              },
+            },
+            multiArticleCoupon: {
+              summary: "Multi-Article Coupon (free coffee + 50% off croissant)",
+              value: {
+                success: true,
+                message: "Coupon validated and redeemed successfully",
+                data: {
+                  redemption_id: "394750",
+                  coupon: {
+                    id: "abc12345-e89b-12d3-a456-426614174333",
+                    name: "Coffee & Croissant Deal",
+                    description: "Free coffee + 50% off croissant",
+                    type: "percentage",
+                    articles: [
+                      {
+                        article_id: "coffee-uuid",
+                        article_name: "Coffee",
+                        discount_value: 100,
+                      },
+                      {
+                        article_id: "croissant-uuid",
+                        discount_value: 50,
+                      },
+                    ],
+                  },
+                  shop: {
+                    id: "456e7890-e89b-12d3-a456-426614174111",
+                    name: "Coffee Shop",
+                  },
+                  valid: true,
+                  message:
+                    "Coupon redeemed successfully. Apply discounts: Free coffee + 50% off croissant",
                 },
               },
             },
@@ -1032,6 +1104,7 @@ pos.openapi(validateCouponRoute, async (c) => {
           name,
           description,
           article_id,
+          articles_data,
           expires_at
         )
       `
@@ -1125,16 +1198,42 @@ pos.openapi(validateCouponRoute, async (c) => {
       scopeMessage = " (applies to entire order)";
     }
 
+    // Always use articles array format for consistency
+    let articles: any[] = [];
+
+    if (coupon.articles_data) {
+      // Multi-article coupon from articles_data
+      const articlesData = Array.isArray(coupon.articles_data)
+        ? coupon.articles_data
+        : JSON.parse(coupon.articles_data);
+
+      articles = articlesData.map((article: any) => ({
+        article_id: article.article_id,
+        article_name: article.article_name,
+        discount_value: article.discount_value,
+      }));
+    } else {
+      // Traditional single-article or global coupon - convert to articles array
+      articles = [
+        {
+          article_id: coupon.article_id, // null = whole invoice, UUID = specific article
+          article_name: null, // We don't have article name in traditional coupons
+          discount_value: coupon.value,
+        },
+      ];
+    }
+
+    const couponData = {
+      id: coupon.id,
+      name: coupon.name,
+      description: coupon.description,
+      type: coupon.type,
+      articles: articles,
+    };
+
     const validationData = {
       redemption_id: redemption.id,
-      coupon: {
-        id: coupon.id,
-        name: coupon.name,
-        description: coupon.description,
-        type: coupon.type,
-        value: coupon.value,
-        article_id: coupon.article_id, // null = whole invoice, UUID = specific article
-      },
+      coupon: couponData,
       shop: {
         id: shop.id,
         name: shop.name,

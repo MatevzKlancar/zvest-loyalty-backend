@@ -44,9 +44,14 @@ const storeDetailsResponseSchema = storeResponseSchema.extend({
 
 const couponResponseSchema = z.object({
   id: z.string().uuid(),
-  code: z.string(),
   type: z.string(),
-  value: z.number(),
+  articles: z.array(
+    z.object({
+      article_id: z.string().uuid().nullable(),
+      article_name: z.string().nullable(),
+      discount_value: z.number(),
+    })
+  ),
   points_required: z.number().nullable(),
   name: z.string(),
   description: z.string().nullable(),
@@ -423,10 +428,18 @@ publicRoutes.openapi(getStoreCouponsRoute, async (c) => {
       );
     }
 
+    // Transform response to include articles array
+    const transformedCoupons =
+      coupons?.map((coupon) => ({
+        ...coupon,
+        articles: coupon.articles_data || [],
+        articles_data: undefined, // Remove from response
+      })) || [];
+
     return c.json({
       success: true,
       message: "Store coupons retrieved successfully",
-      data: coupons,
+      data: transformedCoupons,
       meta: {
         total: count || 0,
         limit: limitNum,
