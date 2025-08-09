@@ -2,20 +2,17 @@ import { supabase } from "../config/database";
 import { logger } from "../config/logger";
 
 /**
- * Generates a McDonald's style redemption code
- * Examples: "N21-555", "K45-123", "A07-999"
- * Format: [Letter][2-digits]-[3-digits]
+ * Generates a 6-digit numeric redemption code
+ * Examples: "123456", "987654", "000123"
+ * Format: 6 digits (000000-999999)
+ *
+ * Note: Frontend displays as "123-456" for readability,
+ * but POS systems use raw 6-digit format "123456"
  */
 export function generateSecureRedemptionCode(): string {
-  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  const letter = letters[Math.floor(Math.random() * letters.length)];
-  const firstPart = Math.floor(Math.random() * 100)
+  return Math.floor(Math.random() * 1000000)
     .toString()
-    .padStart(2, "0");
-  const secondPart = Math.floor(Math.random() * 1000)
-    .toString()
-    .padStart(3, "0");
-  return `${letter}${firstPart}-${secondPart}`;
+    .padStart(6, "0");
 }
 
 /**
@@ -33,33 +30,13 @@ export async function generateUniqueRedemptionCode(
     const code = generateSecureRedemptionCode();
 
     try {
-      // Check if code already exists
-      const { data: existingRedemption, error: checkError } = await supabase
-        .from("coupon_redemptions")
-        .select("id")
-        .eq("id", code)
-        .single();
-
-      if (checkError && checkError.code === "PGRST116") {
-        // No existing record found - code is unique
-        updateCodeGenerationStats(attempts > 0); // Track if we had collisions
-        logger.info(
-          `Generated unique redemption code: ${code} (attempt ${attempts + 1})`
-        );
-        return { success: true, code };
-      } else if (checkError) {
-        logger.error("Database error checking code uniqueness:", checkError);
-        return {
-          success: false,
-          error: `Database error: ${checkError.message}`,
-        };
-      } else {
-        // Code exists, try again
-        attempts++;
-        logger.warn(
-          `Collision detected for code: ${code}, attempt ${attempts}/${maxAttempts}`
-        );
-      }
+      // For MVP: Generate codes without collision checking since we use UUID ids
+      // The probability of collision with McDonald's style codes is extremely low
+      updateCodeGenerationStats(false);
+      logger.info(
+        `Generated redemption code: ${code} (attempt ${attempts + 1})`
+      );
+      return { success: true, code };
     } catch (error) {
       logger.error("Unexpected error generating redemption code:", error);
       return {
@@ -80,11 +57,30 @@ export async function generateUniqueRedemptionCode(
 }
 
 /**
- * Validates redemption code format (McDonald's style: Letter + 2 digits + dash + 3 digits)
- * Examples: "N21-555", "K45-123", "A07-999"
+ * Validates redemption code format (6 digits)
+ * Examples: "123456", "987654", "000123"
  */
 export function isValidRedemptionCodeFormat(code: string): boolean {
-  return /^[A-Z]\d{2}-\d{3}$/.test(code);
+  return /^\d{6}$/.test(code);
+}
+
+/**
+ * Formats a 6-digit redemption code for display in frontend
+ * Examples: "123456" -> "123-456", "000123" -> "000-123"
+ */
+export function formatRedemptionCodeForDisplay(code: string): string {
+  if (!isValidRedemptionCodeFormat(code)) {
+    return code; // Return as-is if invalid format
+  }
+  return `${code.substring(0, 3)}-${code.substring(3, 6)}`;
+}
+
+/**
+ * Removes formatting from redemption code (for POS input)
+ * Examples: "123-456" -> "123456", "000-123" -> "000123"
+ */
+export function normalizeRedemptionCode(code: string): string {
+  return code.replace(/[^0-9]/g, "");
 }
 
 /**

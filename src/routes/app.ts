@@ -4,9 +4,21 @@ import { supabase } from "../config/database";
 import { logger } from "../config/logger";
 import { standardResponse } from "../middleware/error";
 import crypto from "crypto";
-import { generateUniqueRedemptionCode } from "../utils/redemption-code";
+import {
+  generateUniqueRedemptionCode,
+  formatRedemptionCodeForDisplay,
+} from "../utils/redemption-code";
+import {
+  authenticateUser,
+  requireCustomer,
+  UnifiedAuthContext,
+} from "../middleware/unified-auth";
 
-const app = new OpenAPIHono();
+const app = new OpenAPIHono<UnifiedAuthContext>();
+
+// Apply authentication to all app routes - customers must be logged in
+app.use("*", authenticateUser);
+app.use("*", requireCustomer);
 
 // Schemas
 const scanQRSchema = z.object({
@@ -208,7 +220,7 @@ app.openapi(scanQRRoute, async (c) => {
 
     const transaction_id = qr_code_data.replace("PLT_", "");
 
-    // Get transaction with shop and loyalty program info
+    // Get transaction with shop info
     const { data: transaction, error: transactionError } = await supabase
       .from("transactions")
       .select(
@@ -260,17 +272,17 @@ app.openapi(scanQRRoute, async (c) => {
 
     const shop = transaction.shops as any;
 
-    // Check if shop has points-based loyalty system
+    // Check if shop supports points (MVP only supports points)
     if (shop.loyalty_type !== "points") {
       return c.json(
-        standardResponse(400, "Shop does not use points-based loyalty system"),
+        standardResponse(400, "Shop does not support points loyalty system"),
         400
       );
     }
 
     if (!shop.points_per_euro || shop.points_per_euro <= 0) {
       return c.json(
-        standardResponse(400, "Shop has not configured points per euro"),
+        standardResponse(400, "Shop has invalid points configuration"),
         400
       );
     }
@@ -323,7 +335,7 @@ app.openapi(scanQRRoute, async (c) => {
     if (existingAccount) {
       loyaltyAccount = existingAccount;
     } else {
-      // Create new loyalty account (without loyalty_program_id for now)
+      // Create new loyalty account
       const { data: newAccount, error: accountError } = await supabase
         .from("customer_loyalty_accounts")
         .insert({
@@ -343,13 +355,10 @@ app.openapi(scanQRRoute, async (c) => {
       loyaltyAccount = newAccount;
     }
 
-    // Calculate points to award
-    let pointsToAward = 0;
-    if (shop.points_per_euro) {
-      pointsToAward = Math.floor(
-        transaction.total_amount * shop.points_per_euro
-      );
-    }
+    // Calculate points to award (using shop's points_per_euro)
+    const pointsToAward = Math.floor(
+      transaction.total_amount * shop.points_per_euro
+    );
 
     // Update transaction as scanned and award points
     const { error: updateTransactionError } = await supabase
@@ -510,8 +519,7 @@ app.openapi(getTransactionRoute, async (c) => {
 // ===========================
 
 const activateCouponSchema = z.object({
-  customer_email: z.string().email("Valid email is required"),
-  customer_phone: z.string().optional(),
+  // No fields needed - customer identified from authenticated JWT token
 });
 
 const activatedCouponResponseSchema = z.object({
@@ -519,7 +527,7 @@ const activatedCouponResponseSchema = z.object({
   coupon: z.object({
     id: z.string().uuid(),
     type: z.string(),
-    value: z.number(),
+    articles_data: z.array(z.any()),
     name: z.string().nullable(),
     description: z.string().nullable(),
     expires_at: z.string().nullable(),
@@ -567,11 +575,8 @@ Activate a coupon by redeeming loyalty points. This converts points into a usabl
 **Example Usage:**
 \`\`\`bash
 curl -X POST 'https://your-api.com/api/app/coupons/123e4567-e89b-12d3-a456-426614174000/activate' \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "customer_email": "customer@example.com",
-    "customer_phone": "+1234567890"
-  }'
+  -H "Authorization: Bearer CUSTOMER_JWT_TOKEN" \\
+  -H "Content-Type: application/json"
 \`\`\`
 
 **Use Cases:**
@@ -585,14 +590,8 @@ curl -X POST 'https://your-api.com/api/app/coupons/123e4567-e89b-12d3-a456-42661
     params: z.object({
       couponId: z.string().uuid("Invalid coupon ID"),
     }),
-    body: {
-      content: {
-        "application/json": {
-          schema: activateCouponSchema,
-        },
-      },
-    },
   },
+  security: [{ BearerAuth: [] }],
   responses: {
     200: {
       description: "Coupon activated successfully",
@@ -641,7 +640,9 @@ curl -X POST 'https://your-api.com/api/app/coupons/123e4567-e89b-12d3-a456-42661
 app.openapi(activateCouponRoute, async (c) => {
   try {
     const { couponId } = c.req.valid("param");
-    const { customer_email, customer_phone } = c.req.valid("json");
+    const appUser = c.get("appUser"); // Get authenticated customer
+    const customer_email = appUser.email;
+    const customer_phone = appUser.phone_number;
 
     // Get coupon details and verify it's active and available
     const { data: coupon, error: couponError } = await supabase
@@ -651,7 +652,7 @@ app.openapi(activateCouponRoute, async (c) => {
         id,
         shop_id,
         type,
-        value,
+        articles_data,
         points_required,
         name,
         description,
@@ -683,17 +684,7 @@ app.openapi(activateCouponRoute, async (c) => {
       return c.json(standardResponse(400, "Coupon has expired"), 400);
     }
 
-    // Get customer and loyalty account for this shop
-    const { data: appUser, error: userError } = await supabase
-      .from("app_users")
-      .select("id")
-      .eq("email", customer_email)
-      .single();
-
-    if (userError || !appUser) {
-      return c.json(standardResponse(400, "Customer not found"), 400);
-    }
-
+    // Get customer loyalty account for this shop (appUser is already authenticated)
     const { data: loyaltyAccount, error: loyaltyError } = await supabase
       .from("customer_loyalty_accounts")
       .select("points_balance, total_points_earned, total_points_redeemed")
@@ -738,7 +729,9 @@ app.openapi(activateCouponRoute, async (c) => {
       );
     }
 
-    const redemptionId = codeResult.code;
+    const humanReadableCode = codeResult.code;
+    // Generate UUID for the database record
+    const redemptionId = crypto.randomUUID();
 
     const redeemedAt = new Date().toISOString();
 
@@ -771,6 +764,7 @@ app.openapi(activateCouponRoute, async (c) => {
         .from("coupon_redemptions")
         .insert({
           id: redemptionId,
+          redemption_code: humanReadableCode, // Store the 6-digit code
           coupon_id: couponId,
           app_user_id: appUser.id,
           points_deducted: requiredPoints,
@@ -812,32 +806,49 @@ app.openapi(activateCouponRoute, async (c) => {
         },
       });
 
-      // Generate usage instructions based on coupon type
-      let usageInstructions;
-      switch (coupon.type) {
-        case "percentage":
-          if (coupon.value === 100) {
-            usageInstructions = `Show this QR code to get a free item.`;
-          } else {
-            usageInstructions = `Show this QR code to get ${coupon.value}% off your purchase.`;
+      // Generate usage instructions based on coupon type and articles_data
+      let usageInstructions =
+        "Present this QR code to the cashier when making your purchase.";
+
+      try {
+        const articlesData = coupon.articles_data as any[];
+        if (articlesData && articlesData.length > 0) {
+          const firstArticle = articlesData[0];
+
+          switch (coupon.type) {
+            case "percentage":
+              if (firstArticle.discount_value === 100) {
+                usageInstructions = `Show this QR code to get a free ${
+                  firstArticle.article_name || "item"
+                }.`;
+              } else {
+                usageInstructions = `Show this QR code to get ${firstArticle.discount_value}% off your purchase.`;
+              }
+              break;
+            case "fixed":
+              usageInstructions = `Show this QR code to get €${firstArticle.discount_value} off your purchase.`;
+              break;
           }
-          break;
-        case "fixed":
-          usageInstructions = `Show this QR code to get €${coupon.value} off your purchase.`;
-          break;
-        default:
-          usageInstructions =
-            "Present this QR code to the cashier when making your purchase.";
+        }
+      } catch (error) {
+        logger.warn(
+          "Error parsing articles_data for coupon instructions:",
+          error
+        );
       }
 
       const shop = coupon.shops as any;
+      const displayCode = formatRedemptionCodeForDisplay(humanReadableCode);
+
       const activationData = {
         redemption_id: redemptionId,
-        qr_code_data: redemptionId, // QR code contains the redemption ID
+        redemption_code: humanReadableCode, // Raw 6-digit code for POS systems
+        display_code: displayCode, // Formatted code for frontend display (123-456)
+        qr_code_data: humanReadableCode, // QR code contains the raw 6-digit code
         coupon: {
           id: coupon.id,
           type: coupon.type,
-          value: coupon.value,
+          articles_data: coupon.articles_data,
           name: coupon.name,
           description: coupon.description,
           expires_at: coupon.expires_at,
@@ -857,7 +868,7 @@ app.openapi(activateCouponRoute, async (c) => {
         redeemed_at: redeemedAt,
         expires_at: redemptionExpiry,
         valid_for_minutes: 5,
-        usage_instructions: `Show QR code or tell staff: "${redemptionId}" (${redemptionId.length} digits) - Valid for 5 minutes`,
+        usage_instructions: `Show QR code or tell staff: "${displayCode}" - Valid for 5 minutes`,
       };
 
       return c.json(

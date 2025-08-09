@@ -3,11 +3,12 @@ import { standardResponse } from "./error";
 
 export interface UnifiedAuthContext {
   Variables: {
-    userType: "admin" | "shop_owner";
-    userRole: "super_admin" | "platform_admin" | "shop_owner";
+    userType: "admin" | "shop_owner" | "app_user";
+    userRole: "super_admin" | "platform_admin" | "shop_owner" | "customer";
     user: any; // Supabase Auth user
     adminUser?: any; // Admin user data
     shop?: any; // Shop data for shop owners
+    appUser?: any; // App user data for customers
   };
 }
 
@@ -15,28 +16,48 @@ export interface UnifiedAuthContext {
 export const authenticateUser = async (c: any, next: any) => {
   const authHeader = c.req.header("authorization");
 
+  console.log("🔍 AUTH DEBUG: Authorization header:", authHeader);
+
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    console.log("🔍 AUTH DEBUG: Missing or invalid auth header");
     return c.json(standardResponse(401, "Authentication required"), 401);
   }
 
   const token = authHeader.substring(7);
+  console.log(
+    "🔍 AUTH DEBUG: Extracted token:",
+    token?.substring(0, 20) + "..."
+  );
 
   // Verify Supabase Auth token
   const {
     data: { user },
     error,
   } = await supabase.auth.getUser(token);
+
+  console.log("🔍 AUTH DEBUG: Supabase auth result:", {
+    user: user?.id,
+    error: error?.message,
+  });
+
   if (error || !user) {
+    console.log("🔍 AUTH DEBUG: Invalid token or user not found");
     return c.json(standardResponse(401, "Invalid token"), 401);
   }
 
   // Check if user is admin first
-  const { data: adminUser } = await supabase
+  const { data: adminUser, error: adminError } = await supabase
     .from("admin_users")
     .select("id, role, first_name, last_name, is_active")
     .eq("supabase_user_id", user.id)
     .eq("is_active", true)
     .single();
+
+  console.log("🔍 AUTH DEBUG: Admin user lookup:", {
+    supabase_user_id: user.id,
+    adminUser,
+    adminError: adminError?.message,
+  });
 
   if (adminUser) {
     // User is admin
@@ -72,13 +93,29 @@ export const authenticateUser = async (c: any, next: any) => {
       c.set("shop", shop);
       c.set("user", user);
     } else {
-      return c.json(
-        standardResponse(
-          403,
-          "Access denied - no active shop or admin access found"
-        ),
-        403
-      );
+      // Check if user is app user (customer)
+      const { data: appUser } = await supabase
+        .from("app_users")
+        .select("id, email, first_name, last_name, is_verified")
+        .eq("email", user.email)
+        .eq("is_verified", true)
+        .single();
+
+      if (appUser) {
+        // User is verified app user (customer)
+        c.set("userType", "app_user");
+        c.set("userRole", "customer");
+        c.set("appUser", appUser);
+        c.set("user", user);
+      } else {
+        return c.json(
+          standardResponse(
+            403,
+            "Access denied - no active shop, admin, or customer access found"
+          ),
+          403
+        );
+      }
     }
   }
 
@@ -110,6 +147,17 @@ export const requireShopOwner = async (c: any, next: any) => {
   const shop = c.get("shop");
   if (!shop) {
     return c.json(standardResponse(403, "Shop owner access required"), 403);
+  }
+  await next();
+};
+
+// Require customer access (for app user endpoints)
+export const requireCustomer = async (c: any, next: any) => {
+  const userType = c.get("userType");
+  const appUser = c.get("appUser");
+
+  if (userType !== "app_user" || !appUser) {
+    return c.json(standardResponse(403, "Customer access required"), 403);
   }
   await next();
 };
@@ -151,6 +199,17 @@ export const getUserPermissions = (
       "system_configuration",
       "view_audit_logs",
       "manage_system_settings"
+    );
+  }
+
+  // Customer permissions
+  if (userType === "app_user") {
+    permissions.push(
+      "scan_qr_codes",
+      "activate_coupons",
+      "view_own_transactions",
+      "view_own_loyalty_points",
+      "manage_own_profile"
     );
   }
 

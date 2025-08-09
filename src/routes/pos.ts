@@ -4,7 +4,10 @@ import { authenticatePOSProvider, type AuthContext } from "../middleware/auth";
 import { supabase } from "../config/database";
 import { logger } from "../config/logger";
 import { standardResponse } from "../middleware/error";
-import { isValidRedemptionCodeFormat } from "../utils/redemption-code";
+import {
+  isValidRedemptionCodeFormat,
+  normalizeRedemptionCode,
+} from "../utils/redemption-code";
 
 const pos = new OpenAPIHono<AuthContext>();
 
@@ -1058,8 +1061,10 @@ pos.openapi(validateCouponRoute, async (c) => {
     const { shop_id, redemption_id } = c.req.valid("json");
     const posProvider = c.get("posProvider");
 
-    // Validate redemption code format (6 digits)
-    if (!isValidRedemptionCodeFormat(redemption_id)) {
+    // Normalize redemption code (remove dashes if present) and validate
+    const normalizedCode = normalizeRedemptionCode(redemption_id);
+
+    if (!isValidRedemptionCodeFormat(normalizedCode)) {
       return c.json(
         standardResponse(
           400,
@@ -1100,16 +1105,14 @@ pos.openapi(validateCouponRoute, async (c) => {
           id,
           shop_id,
           type,
-          value,
           name,
           description,
-          article_id,
           articles_data,
           expires_at
         )
       `
       )
-      .eq("id", redemption_id)
+      .eq("redemption_code", normalizedCode)
       .eq("status", "active")
       .single();
 
@@ -1140,7 +1143,7 @@ pos.openapi(validateCouponRoute, async (c) => {
       await supabase
         .from("coupon_redemptions")
         .update({ status: "expired" })
-        .eq("id", redemption_id);
+        .eq("redemption_code", normalizedCode);
 
       return c.json(
         standardResponse(
@@ -1161,9 +1164,9 @@ pos.openapi(validateCouponRoute, async (c) => {
       .from("coupon_redemptions")
       .update({
         status: "used",
-        discount_applied: coupon.value, // Store the coupon value for records
+        // Note: articles_data contains the discount info, not a simple value field
       })
-      .eq("id", redemption_id);
+      .eq("redemption_code", normalizedCode);
 
     if (updateError) {
       logger.error("Failed to update coupon redemption status:", updateError);
@@ -1173,29 +1176,40 @@ pos.openapi(validateCouponRoute, async (c) => {
       );
     }
 
-    // Generate message based on coupon type and value
-    let message;
-    switch (coupon.type) {
-      case "percentage":
-        if (coupon.value === 100) {
-          message = `Free item (100% discount)`;
-        } else {
-          message = `Apply ${coupon.value}% discount`;
-        }
-        break;
-      case "fixed":
-        message = `Apply €${coupon.value} discount`;
-        break;
-      default:
-        message = "Special offer applied";
-    }
-
-    // Generate message based on coupon scope
+    // Generate message based on coupon type and articles_data
+    let message = "Special offer applied";
     let scopeMessage = "";
-    if (coupon.article_id) {
-      scopeMessage = " (applies to specific item only)";
-    } else {
-      scopeMessage = " (applies to entire order)";
+
+    try {
+      if (coupon.articles_data) {
+        const articlesData = JSON.parse(coupon.articles_data);
+
+        if (coupon.type === "percentage") {
+          const percentage =
+            articlesData.percentage || articlesData.discount_percentage;
+          if (percentage === 100) {
+            message = `Free item (100% discount)`;
+          } else if (percentage) {
+            message = `Apply ${percentage}% discount`;
+          }
+        } else if (coupon.type === "fixed") {
+          const amount = articlesData.amount || articlesData.discount_amount;
+          if (amount) {
+            message = `Apply €${amount} discount`;
+          }
+        }
+
+        // Check scope based on articles_data structure
+        if (articlesData.articles && articlesData.articles.length > 0) {
+          scopeMessage = " (applies to specific items only)";
+        } else {
+          scopeMessage = " (applies to entire order)";
+        }
+      }
+    } catch (error) {
+      logger.error("Error parsing articles_data for coupon message:", error);
+      message = "Special offer applied";
+      scopeMessage = "";
     }
 
     // Always use articles array format for consistency

@@ -13,9 +13,28 @@ import crypto from "crypto";
 
 const admin = new OpenAPIHono<UnifiedAuthContext>();
 
-// Apply unified auth middleware to all admin routes
-admin.use("*", authenticateUser);
-admin.use("*", requireAdmin);
+// Apply unified auth middleware to all admin routes EXCEPT login
+admin.use("*", async (c, next) => {
+  // Skip auth for login endpoint
+  if (c.req.path === "/api/admin/login") {
+    await next();
+    return;
+  }
+
+  // Apply auth to all other routes
+  await authenticateUser(c, next);
+});
+
+admin.use("*", async (c, next) => {
+  // Skip admin requirement for login endpoint
+  if (c.req.path === "/api/admin/login") {
+    await next();
+    return;
+  }
+
+  // Require admin for all other routes
+  await requireAdmin(c, next);
+});
 
 // ===========================
 // CLEAN ADMIN API - ONLY 5 ESSENTIAL ENDPOINTS
@@ -741,7 +760,411 @@ getInvitationHandler.openapi(getInvitationRoute, async (c) => {
 admin.route("", getInvitationHandler);
 
 // ===========================
-// 6. ADMIN PROFILE ENDPOINT
+// 6. AUTHENTICATION & TESTING ENDPOINTS
+// ===========================
+
+const loginSchema = z.object({
+  email: z.string().email("Valid email required"),
+  password: z.string().min(1, "Password required"),
+});
+
+const loginRoute = createRoute({
+  method: "post",
+  path: "/login",
+  summary: "🔐 Login and get JWT token",
+  description: `
+**Login endpoint to get JWT token for API testing.**
+
+This endpoint allows you to sign in with any user (admin, shop owner, or customer) 
+and get their JWT token to use in other API endpoints.
+
+**Perfect for API testing in Scalar!**
+
+**No authentication required** - this is the login endpoint.
+  `,
+  tags: ["Admin"],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: loginSchema.openapi({
+            example: {
+              email: "admin@company.com",
+              password: "your-password",
+            },
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Login successful",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.object({
+              user: z.object({
+                id: z.string(),
+                email: z.string(),
+                user_type: z.string(),
+                user_role: z.string(),
+              }),
+              jwt_token: z.string(),
+              expires_at: z.string(),
+              usage_instructions: z.object({
+                authorization_header: z.string(),
+                example_request: z.string(),
+              }),
+            }),
+          }),
+        },
+      },
+    },
+    401: {
+      description: "Invalid credentials",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+  },
+});
+
+// Remove auth for this specific endpoint
+const loginHandler = new OpenAPIHono();
+loginHandler.openapi(loginRoute, async (c) => {
+  try {
+    const { email, password } = c.req.valid("json");
+
+    // Sign in with Supabase Auth
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error || !data.session) {
+      logger.warn(`Failed login attempt for: ${email}`);
+      return c.json(standardResponse(401, "Invalid email or password"), 401);
+    }
+
+    const user = data.user;
+    const session = data.session;
+
+    // Determine user type and role
+    let userType = "unknown";
+    let userRole = "unknown";
+    let userInfo: any = {};
+
+    // Check if user is admin
+    const { data: adminUser } = await supabase
+      .from("admin_users")
+      .select("id, role, first_name, last_name, is_active")
+      .eq("supabase_user_id", user.id)
+      .eq("is_active", true)
+      .single();
+
+    if (adminUser) {
+      userType = "admin";
+      userRole = adminUser.role;
+      userInfo = {
+        admin_id: adminUser.id,
+        first_name: adminUser.first_name,
+        last_name: adminUser.last_name,
+      };
+    } else {
+      // Check if user is shop owner
+      const { data: shop } = await supabase
+        .from("shops")
+        .select("id, name, status")
+        .eq("owner_user_id", user.id)
+        .eq("status", "active")
+        .single();
+
+      if (shop) {
+        userType = "shop_owner";
+        userRole = "shop_owner";
+        userInfo = {
+          shop_id: shop.id,
+          shop_name: shop.name,
+        };
+      } else {
+        // Check if user is app user (customer)
+        const { data: appUser } = await supabase
+          .from("app_users")
+          .select("id, first_name, last_name, is_verified")
+          .eq("email", user.email)
+          .eq("is_verified", true)
+          .single();
+
+        if (appUser) {
+          userType = "app_user";
+          userRole = "customer";
+          userInfo = {
+            app_user_id: appUser.id,
+            first_name: appUser.first_name,
+            last_name: appUser.last_name,
+          };
+        }
+      }
+    }
+
+    logger.info(`Successful login: ${email} (${userType})`);
+
+    return c.json(
+      standardResponse(200, "Login successful", {
+        user: {
+          id: user.id,
+          email: user.email,
+          user_type: userType,
+          user_role: userRole,
+          ...userInfo,
+        },
+        jwt_token: session.access_token,
+        expires_at: session.expires_at,
+        usage_instructions: {
+          authorization_header: `Bearer ${session.access_token}`,
+          example_request:
+            "Copy the jwt_token above and use it in Authorization header for other API calls",
+          scalar_usage: "In Scalar, click 'Authorize' and paste the jwt_token",
+        },
+      })
+    );
+  } catch (error) {
+    logger.error("Error during login:", error);
+    return c.json(standardResponse(500, "Login failed"), 500);
+  }
+});
+
+// Mount the no-auth handler to admin
+admin.route("", loginHandler);
+
+const createTestCustomerSchema = z.object({
+  email: z.string().email("Valid email required"),
+  password: z.string().min(8, "Password must be at least 8 characters"),
+  first_name: z.string().min(1, "First name required"),
+  last_name: z.string().min(1, "Last name required"),
+  phone: z.string().optional(),
+  initial_points: z.number().min(0).default(10000),
+});
+
+const createTestCustomerRoute = createRoute({
+  method: "post",
+  path: "/testing/create-test-customer",
+  summary: "🧪 Create test customer for POS testing",
+  description: `
+**Create a test customer with Supabase Auth account and loyalty points.**
+
+This endpoint is designed for POS engineers to create test customers they can use
+to test the coupon activation flow. Creates both Supabase Auth user and app_users record.
+
+**Authentication:** Requires admin JWT token in Authorization header.
+  `,
+  tags: ["Admin"],
+  security: [{ BearerAuth: [] }],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: createTestCustomerSchema.openapi({
+            example: {
+              email: "testcustomer@example.com",
+              password: "TestPassword123!",
+              first_name: "Test",
+              last_name: "Customer",
+              phone: "+1234567890",
+              initial_points: 10000,
+            },
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: "Test customer created successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.object({
+              customer: z.object({
+                id: z.string().uuid(),
+                email: z.string(),
+                supabase_user_id: z.string(),
+              }),
+              test_jwt_token: z.string(),
+              loyalty_accounts: z.array(
+                z.object({
+                  shop_id: z.string().uuid(),
+                  shop_name: z.string(),
+                  points_balance: z.number(),
+                })
+              ),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+admin.openapi(createTestCustomerRoute, async (c) => {
+  try {
+    const adminUser = c.get("adminUser");
+    const customerData = c.req.valid("json");
+
+    // 1. Create Supabase Auth user
+    const { data: authUser, error: authError } =
+      await supabase.auth.admin.createUser({
+        email: customerData.email,
+        password: customerData.password,
+        email_confirm: true, // Skip email confirmation for test users
+        user_metadata: {
+          first_name: customerData.first_name,
+          last_name: customerData.last_name,
+          phone: customerData.phone,
+          role: "customer",
+          is_test_user: true,
+        },
+      });
+
+    if (authError) {
+      logger.error("Failed to create Supabase Auth user:", authError);
+      return c.json(
+        standardResponse(
+          500,
+          `Failed to create auth user: ${authError.message}`
+        ),
+        500
+      );
+    }
+
+    // 2. Create app_users record
+    const { data: appUser, error: appUserError } = await supabase
+      .from("app_users")
+      .insert({
+        email: customerData.email,
+        phone_number: customerData.phone,
+        first_name: customerData.first_name,
+        last_name: customerData.last_name,
+        is_verified: true, // Test users are auto-verified
+      })
+      .select()
+      .single();
+
+    if (appUserError) {
+      logger.error("Failed to create app user:", appUserError);
+      // Clean up auth user if app user creation fails
+      await supabase.auth.admin.deleteUser(authUser.user.id);
+      return c.json(
+        standardResponse(
+          500,
+          `Failed to create app user: ${appUserError.message}`
+        ),
+        500
+      );
+    }
+
+    // 3. Create loyalty accounts for all active shops
+    const { data: activeShops } = await supabase
+      .from("shops")
+      .select("id, name, loyalty_programs(id)")
+      .eq("status", "active")
+      .limit(10); // Limit to first 10 shops for testing
+
+    const loyaltyAccounts: Array<{
+      shop_id: string;
+      shop_name: string;
+      points_balance: number;
+    }> = [];
+
+    if (activeShops && activeShops.length > 0) {
+      for (const shop of activeShops) {
+        if (shop.loyalty_programs && shop.loyalty_programs.length > 0) {
+          const { data: loyaltyAccount } = await supabase
+            .from("customer_loyalty_accounts")
+            .insert({
+              app_user_id: appUser.id,
+              shop_id: shop.id,
+              loyalty_program_id: shop.loyalty_programs[0].id,
+              points_balance: customerData.initial_points,
+              total_points_earned: customerData.initial_points,
+            })
+            .select()
+            .single();
+
+          if (loyaltyAccount) {
+            loyaltyAccounts.push({
+              shop_id: shop.id,
+              shop_name: shop.name,
+              points_balance: customerData.initial_points,
+            });
+          }
+        }
+      }
+    }
+
+    // 4. Generate a test JWT token that POS engineers can use
+    // Note: For testing, POS engineers should use Supabase client to sign in and get JWT token
+    let testJwtToken =
+      "Please use Supabase client to sign in with the credentials above to get JWT token";
+
+    // Alternative: Generate a session for the user (if needed for immediate testing)
+    try {
+      const { data: sessionData, error: sessionError } =
+        await supabase.auth.admin.generateLink({
+          type: "recovery",
+          email: customerData.email,
+          options: {
+            redirectTo: "http://localhost:3000/auth/callback",
+          },
+        });
+
+      if (sessionData && !sessionError) {
+        // Note: This doesn't give us the JWT directly, so we provide instructions instead
+        testJwtToken = `Use these credentials to sign in via Supabase client: ${customerData.email} / ${customerData.password}`;
+      }
+    } catch (error) {
+      logger.warn("Could not generate session link:", error);
+    }
+
+    logger.info(
+      `Test customer created: ${appUser.email} by admin: ${adminUser.id}`
+    );
+
+    return c.json(
+      standardResponse(201, "Test customer created successfully", {
+        customer: {
+          id: appUser.id,
+          email: appUser.email,
+          supabase_user_id: authUser.user.id,
+        },
+        test_jwt_token: testJwtToken,
+        loyalty_accounts: loyaltyAccounts,
+        usage_instructions: {
+          login: `Use email: ${customerData.email}, password: ${customerData.password}`,
+          api_testing: "Use the test_jwt_token in Authorization: Bearer header",
+          points_available: customerData.initial_points,
+        },
+      }),
+      201
+    );
+  } catch (error) {
+    logger.error("Error creating test customer:", error);
+    return c.json(standardResponse(500, "Failed to create test customer"), 500);
+  }
+});
+
+// ===========================
+// 7. ADMIN PROFILE ENDPOINT
 // ===========================
 
 const adminProfileRoute = createRoute({
