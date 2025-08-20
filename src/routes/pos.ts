@@ -72,11 +72,12 @@ const validateCouponSchema = z.object({
   shop_id: z.string().uuid("Invalid shop ID"),
   redemption_id: z
     .string()
-    .min(6)
-    .max(6, "Invalid redemption code format - must be 6 digits"),
+    .min(1, "Redemption code is required")
+    .max(20, "Redemption code too long"), // Allow longer codes for better error handling
 });
 
-const shopResponseSchema = z.object({
+// Base shop schema for normal responses
+const baseShopResponseSchema = z.object({
   id: z.string().uuid(),
   pos_shop_id: z.string().nullable(),
   name: z.string(),
@@ -87,15 +88,33 @@ const shopResponseSchema = z.object({
   created_at: z.string(),
 });
 
+// Extended shop schema for enable shop endpoint (with error handling)
+const shopResponseSchema = z.object({
+  valid: z.boolean().optional(),
+  error_code: z.string().optional(),
+  error_message: z.string().optional(),
+  id: z.string().uuid().optional(),
+  pos_shop_id: z.string().nullable().optional(),
+  name: z.string().optional(),
+  description: z.string().nullable().optional(),
+  type: z.string().nullable().optional(),
+  status: z.string().optional(),
+  pos_synced_at: z.string().nullable().optional(),
+  created_at: z.string().optional(),
+});
+
 const transactionResponseSchema = z.object({
-  id: z.string().uuid(),
-  shop_id: z.string().uuid(),
-  pos_invoice_id: z.string(),
-  total_amount: z.number(),
-  status: z.string(),
-  qr_code_data: z.string(),
-  display_text: z.string(),
-  created_at: z.string(),
+  valid: z.boolean().optional(),
+  error_code: z.string().optional(),
+  error_message: z.string().optional(),
+  id: z.string().uuid().optional(),
+  shop_id: z.string().uuid().optional(),
+  pos_invoice_id: z.string().optional(),
+  total_amount: z.number().optional(),
+  status: z.string().optional(),
+  qr_code_data: z.string().optional(),
+  display_text: z.string().optional(),
+  created_at: z.string().optional(),
 });
 
 const couponResponseSchema = z.object({
@@ -117,26 +136,31 @@ const couponResponseSchema = z.object({
 });
 
 const validatedCouponResponseSchema = z.object({
-  redemption_id: z.string(),
-  coupon: z.object({
-    id: z.string().uuid(),
-    name: z.string(), // description field as name
-    description: z.string().nullable(),
-    type: z.string(), // "percentage" or "fixed"
-    articles: z.array(
-      z.object({
-        article_id: z.string().uuid().nullable(), // null = applies to whole invoice
-        article_name: z.string().nullable(), // Article name for display, null for global coupons
-        discount_value: z.number(), // Percentage (0-100) or fixed amount, interpreted based on coupon.type
-      })
-    ),
-  }),
-  shop: z.object({
-    id: z.string().uuid(),
-    name: z.string(),
-  }),
   valid: z.boolean(),
-  message: z.string(),
+  error_code: z.string().optional(),
+  error_message: z.string().optional(),
+  redemption_id: z.string().optional(),
+  coupon: z
+    .object({
+      id: z.string().uuid(),
+      name: z.string(), // description field as name
+      description: z.string().nullable(),
+      type: z.string(), // "percentage" or "fixed"
+      articles: z.array(
+        z.object({
+          article_id: z.string().uuid().nullable(), // null = applies to whole invoice
+          article_name: z.string().nullable(), // Article name for display, null for global coupons
+          discount_value: z.number(), // Percentage (0-100) or fixed amount, interpreted based on coupon.type
+        })
+      ),
+    })
+    .optional(),
+  shop: z
+    .object({
+      id: z.string().uuid(),
+      name: z.string(),
+    })
+    .optional(),
 });
 
 // Step 2 & 3: Get all shops for POS provider
@@ -155,7 +179,7 @@ const getShopsRoute = createRoute({
           schema: z.object({
             success: z.boolean(),
             message: z.string(),
-            data: z.array(shopResponseSchema),
+            data: z.array(baseShopResponseSchema),
           }),
         },
       },
@@ -265,12 +289,13 @@ pos.openapi(enableShopRoute, async (c) => {
 
     // Only allow enabling shops that are in pending status
     if (existingShop.status !== "pending") {
+      // Business logic error: shop not in pending status - return 200 with error details
       return c.json(
-        standardResponse(
-          400,
-          `Shop must be in pending status to enable. Current status: ${existingShop.status}`
-        ),
-        400
+        standardResponse(200, "Shop enablement completed", {
+          valid: false,
+          error_code: "invalid_status",
+          error_message: `Shop must be in pending status to enable. Current status: ${existingShop.status}`,
+        })
       );
     }
 
@@ -285,7 +310,14 @@ pos.openapi(enableShopRoute, async (c) => {
         .single();
 
       if (duplicateShop) {
-        return c.json(standardResponse(400, "POS shop ID already in use"), 400);
+        // Business logic error: POS shop ID already in use - return 200 with error details
+        return c.json(
+          standardResponse(200, "Shop enablement completed", {
+            valid: false,
+            error_code: "pos_id_in_use",
+            error_message: `POS shop ID '${enableData.pos_shop_id}' is already in use by another shop`,
+          })
+        );
       }
     }
 
@@ -308,7 +340,12 @@ pos.openapi(enableShopRoute, async (c) => {
     }
 
     logger.info(`Shop enabled successfully: ${shop_id}`);
-    return c.json(standardResponse(200, "Shop enabled successfully", shop));
+    return c.json(
+      standardResponse(200, "Shop enabled successfully", {
+        valid: true,
+        ...shop,
+      })
+    );
   } catch (error) {
     logger.error("Error enabling shop:", error);
     return c.json(standardResponse(500, "Internal server error"), 500);
@@ -539,17 +576,19 @@ curl -X POST https://zvest-loyalty-backend.onrender.com/api/pos/transactions \\
       description: "Transaction created successfully with QR code",
       content: {
         "application/json": {
-          schema: z
-            .object({
-              success: z.boolean(),
-              message: z.string(),
-              data: transactionResponseSchema,
-            })
-            .openapi({
-              example: {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: transactionResponseSchema,
+          }),
+          examples: {
+            success: {
+              summary: "Transaction Created Successfully",
+              value: {
                 success: true,
                 message: "Transaction created successfully",
                 data: {
+                  valid: true,
                   id: "456e7890-e89b-12d3-a456-426614174111",
                   shop_id: "123e4567-e89b-12d3-a456-426614174000",
                   pos_invoice_id: "INV-2024-001",
@@ -561,7 +600,21 @@ curl -X POST https://zvest-loyalty-backend.onrender.com/api/pos/transactions \\
                   created_at: "2024-01-15T14:25:00Z",
                 },
               },
-            }),
+            },
+            duplicateInvoice: {
+              summary: "Duplicate Invoice ID",
+              value: {
+                success: true,
+                message: "Transaction creation completed",
+                data: {
+                  valid: false,
+                  error_code: "duplicate_invoice",
+                  error_message:
+                    "Transaction with invoice ID 'INV-2024-001' already exists for this shop",
+                },
+              },
+            },
+          },
         },
       },
     },
@@ -634,12 +687,13 @@ pos.openapi(createTransactionRoute, async (c) => {
       .single();
 
     if (existingTransaction) {
+      // Business logic error: duplicate invoice ID - return 200 with error details
       return c.json(
-        standardResponse(
-          400,
-          "Transaction with this invoice ID already exists"
-        ),
-        400
+        standardResponse(200, "Transaction creation completed", {
+          valid: false,
+          error_code: "duplicate_invoice",
+          error_message: `Transaction with invoice ID '${transactionData.pos_invoice_id}' already exists for this shop`,
+        })
       );
     }
 
@@ -665,8 +719,9 @@ pos.openapi(createTransactionRoute, async (c) => {
       return c.json(standardResponse(500, "Failed to create transaction"), 500);
     }
 
-    // Add display text for receipt printing
+    // Add display text for receipt printing and valid flag
     const transactionWithDisplayText = {
+      valid: true,
       ...transaction,
       display_text: `Scan for loyalty points\nInvoice: ${transaction.pos_invoice_id}`,
     };
@@ -879,37 +934,59 @@ const validateCouponRoute = createRoute({
   description: `
 Validates a coupon redemption ID from QR code scan and applies the discount if valid.
 
-**Flow:**
+## 🎯 Smart Error Handling
+
+**This endpoint uses business-logic-friendly error handling:**
+
+**✅ ALL validation results return HTTP 200 OK** - whether valid or invalid
+- Valid coupon → \`{ data: { valid: true, coupon: {...} } }\`
+- Expired coupon → \`{ data: { valid: false, error_code: "coupon_expired" } }\`
+- Invalid code → \`{ data: { valid: false, error_code: "invalid_code" } }\`
+- Wrong format → \`{ data: { valid: false, error_code: "invalid_format" } }\`
+
+**❌ Only technical errors use HTTP 4xx/5xx** (auth failures, server errors)
+
+This approach makes POS integration much simpler - no complex error handling needed!
+
+## Flow
 1. Customer shows QR code containing redemption ID
 2. POS system scans QR code and extracts redemption ID
 3. POS calls this endpoint to validate and redeem coupon
 4. System checks validity (5 minute expiry) and marks as used
 5. Returns discount amount and coupon details for POS to apply
 
-**Coupon Structure:**
-All coupons now use a consistent \`articles\` array format:
+## Error Codes Reference
+| Code | Meaning | Action |
+|------|---------|---------|
+| \`coupon_expired\` | Coupon past expiry date | Show expiry date to customer |
+| \`redemption_expired\` | 5-minute window passed | Ask customer to generate new code |
+| \`invalid_code\` | Code not found/already used | Ask customer to check code |
+| \`invalid_format\` | Wrong number of digits | Ask customer to re-enter |
+| \`wrong_shop\` | Coupon for different location | Explain location restriction |
+
+## POS Integration Example
+\`\`\`javascript
+const result = await validateCoupon(shopId, redemptionCode);
+
+// Always check result.data.valid first
+if (result.data.valid) {
+  // Apply discount using result.data.coupon
+  applyCouponDiscount(result.data.coupon);
+  showSuccess("Coupon applied successfully!");
+} else {
+  // Show specific error message to staff
+  showError(result.data.error_message);
+  // e.g., "This coupon expired on January 15, 2024"
+}
+\`\`\`
+
+## Coupon Structure
+All coupons use a consistent \`articles\` array format:
 - **Global Coupons**: \`articles[0].article_id = null\` (applies to entire invoice)
 - **Single-Article Coupons**: \`articles[0].article_id = "uuid"\` (applies to specific item)
 - **Multi-Article Coupons**: Multiple items in \`articles\` array with different discount values
 
-**POS Integration Logic:**
-\`\`\`javascript
-// All coupons now use the articles array - simple and consistent!
-coupon.articles.forEach(article => {
-  if (article.article_id === null) {
-    // Apply to total invoice
-    totalDiscount = calculateDiscount(invoiceTotal, coupon.type, article.discount_value);
-  } else {
-    // Apply to specific article
-    const targetItem = items.find(item => item.pos_article_id === article.article_id);
-    if (targetItem) {
-      itemDiscount = calculateDiscount(targetItem.total_price, coupon.type, article.discount_value);
-    }
-  }
-});
-\`\`\`
-
-**Important Notes:**
+## Important Notes
 - Coupon redemptions expire after 5 minutes
 - Once validated, coupon is marked as "used" and cannot be reused
 - Discount percentage is returned as 0-100 (e.g., 20 = 20% off)
@@ -934,7 +1011,8 @@ coupon.articles.forEach(article => {
   },
   responses: {
     200: {
-      description: "Coupon validated and redeemed successfully",
+      description:
+        "Coupon validation response (success or business logic error)",
       content: {
         "application/json": {
           schema: z.object({
@@ -943,12 +1021,13 @@ coupon.articles.forEach(article => {
             data: validatedCouponResponseSchema,
           }),
           examples: {
-            globalCoupon: {
-              summary: "Global Coupon (applies to entire invoice)",
+            validCoupon: {
+              summary: "Valid Coupon - Successfully Redeemed",
               value: {
                 success: true,
-                message: "Coupon validated and redeemed successfully",
+                message: "Coupon validation completed",
                 data: {
+                  valid: true,
                   redemption_id: "394750",
                   coupon: {
                     id: "123e4567-e89b-12d3-a456-426614174000",
@@ -957,8 +1036,8 @@ coupon.articles.forEach(article => {
                     type: "percentage",
                     articles: [
                       {
-                        article_id: null, // Global coupon
-                        article_name: null, // No specific article name for global coupons
+                        article_id: null,
+                        article_name: null,
                         discount_value: 20,
                       },
                     ],
@@ -967,74 +1046,67 @@ coupon.articles.forEach(article => {
                     id: "456e7890-e89b-12d3-a456-426614174111",
                     name: "Fashion Boutique",
                   },
-                  valid: true,
-                  message:
-                    "Coupon redeemed successfully. Apply 20% discount (applies to entire order)",
                 },
               },
             },
-            articleSpecificCoupon: {
-              summary:
-                "Article-Specific Coupon (applies to specific item only)",
+            expiredCoupon: {
+              summary: "Expired Coupon",
               value: {
                 success: true,
-                message: "Coupon validated and redeemed successfully",
+                message: "Coupon validation completed",
                 data: {
-                  redemption_id: "394750",
-                  coupon: {
-                    id: "789a0123-e89b-12d3-a456-426614174222",
-                    name: "Free Pizza Discount",
-                    description: "Get €3.50 off Pica mehiška",
-                    type: "fixed",
-                    articles: [
-                      {
-                        article_id: "027a689b-0d35-4234-a7d9-628b99ed6d64", // Specific to "Pica mehiška"
-                        article_name: "Pica mehiška",
-                        discount_value: 3.5,
-                      },
-                    ],
-                  },
-                  shop: {
-                    id: "456e7890-e89b-12d3-a456-426614174111",
-                    name: "Fashion Boutique",
-                  },
-                  valid: true,
-                  message:
-                    "Coupon redeemed successfully. Apply €3.50 discount (applies to specific item only)",
+                  valid: false,
+                  error_code: "coupon_expired",
+                  error_message: "This coupon expired on January 15, 2024",
                 },
               },
             },
-            multiArticleCoupon: {
-              summary: "Multi-Article Coupon (free coffee + 50% off croissant)",
+            alreadyUsedCoupon: {
+              summary: "Already Used Coupon",
               value: {
                 success: true,
-                message: "Coupon validated and redeemed successfully",
+                message: "Coupon validation completed",
                 data: {
-                  redemption_id: "394750",
-                  coupon: {
-                    id: "abc12345-e89b-12d3-a456-426614174333",
-                    name: "Coffee & Croissant Deal",
-                    description: "Free coffee + 50% off croissant",
-                    type: "percentage",
-                    articles: [
-                      {
-                        article_id: "coffee-uuid",
-                        article_name: "Coffee",
-                        discount_value: 100,
-                      },
-                      {
-                        article_id: "croissant-uuid",
-                        discount_value: 50,
-                      },
-                    ],
-                  },
-                  shop: {
-                    id: "456e7890-e89b-12d3-a456-426614174111",
-                    name: "Coffee Shop",
-                  },
-                  valid: true,
-                  message:
-                    "Coupon redeemed successfully. Apply discounts: Free coffee + 50% off croissant",
+                  valid: false,
+                  error_code: "coupon_already_used",
+                  error_message: "This coupon has already been used",
+                },
+              },
+            },
+            invalidCode: {
+              summary: "Invalid Redemption Code",
+              value: {
+                success: true,
+                message: "Coupon validation completed",
+                data: {
+                  valid: false,
+                  error_code: "invalid_code",
+                  error_message: "Redemption code not found or invalid",
+                },
+              },
+            },
+            redemptionExpired: {
+              summary: "Redemption Window Expired",
+              value: {
+                success: true,
+                message: "Coupon validation completed",
+                data: {
+                  valid: false,
+                  error_code: "redemption_expired",
+                  error_message:
+                    "Redemption window expired (valid for 5 minutes only)",
+                },
+              },
+            },
+            invalidFormat: {
+              summary: "Invalid Code Format (too short/long)",
+              value: {
+                success: true,
+                message: "Coupon validation completed",
+                data: {
+                  valid: false,
+                  error_code: "invalid_format",
+                  error_message: "Redemption code too short - must be 6 digits",
                 },
               },
             },
@@ -1043,7 +1115,30 @@ coupon.articles.forEach(article => {
       },
     },
     400: {
-      description: "Invalid or expired coupon",
+      description:
+        "Technical error (malformed request, missing required fields, etc.)",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean().default(false),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+    401: {
+      description: "Invalid API key",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean().default(false),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+    404: {
+      description: "Shop not found or access denied",
       content: {
         "application/json": {
           schema: z.object({
@@ -1064,13 +1159,25 @@ pos.openapi(validateCouponRoute, async (c) => {
     // Normalize redemption code (remove dashes if present) and validate
     const normalizedCode = normalizeRedemptionCode(redemption_id);
 
+    // Check code format - handle different cases
     if (!isValidRedemptionCodeFormat(normalizedCode)) {
+      // Business logic error: code format invalid (too short/long, not digits)
+      let errorMessage = "Invalid redemption code format";
+
+      if (normalizedCode.length < 6) {
+        errorMessage = "Redemption code too short - must be 6 digits";
+      } else if (normalizedCode.length > 6) {
+        errorMessage = "Redemption code too long - must be 6 digits";
+      } else if (!/^\d{6}$/.test(normalizedCode)) {
+        errorMessage = "Redemption code must contain only digits";
+      }
+
       return c.json(
-        standardResponse(
-          400,
-          "Invalid redemption code format - must be 6 digits"
-        ),
-        400
+        standardResponse(200, "Coupon validation completed", {
+          valid: false,
+          error_code: "invalid_format",
+          error_message: errorMessage,
+        })
       );
     }
 
@@ -1117,9 +1224,13 @@ pos.openapi(validateCouponRoute, async (c) => {
       .single();
 
     if (redemptionError || !redemption) {
+      // Business logic error: code not found or already used - return 200 with error details
       return c.json(
-        standardResponse(400, "Invalid or already used coupon redemption"),
-        400
+        standardResponse(200, "Coupon validation completed", {
+          valid: false,
+          error_code: "invalid_code",
+          error_message: "Redemption code not found or invalid",
+        })
       );
     }
 
@@ -1127,9 +1238,13 @@ pos.openapi(validateCouponRoute, async (c) => {
 
     // Verify coupon belongs to the shop
     if (coupon.shop_id !== shop_id) {
+      // Business logic error: wrong shop - return 200 with error details
       return c.json(
-        standardResponse(400, "Coupon does not belong to this shop"),
-        400
+        standardResponse(200, "Coupon validation completed", {
+          valid: false,
+          error_code: "wrong_shop",
+          error_message: "This coupon cannot be used at this location",
+        })
       );
     }
 
@@ -1145,18 +1260,34 @@ pos.openapi(validateCouponRoute, async (c) => {
         .update({ status: "expired" })
         .eq("redemption_code", normalizedCode);
 
+      // Business logic error: redemption window expired - return 200 with error details
       return c.json(
-        standardResponse(
-          400,
-          "Coupon redemption has expired (valid for 5 minutes only)"
-        ),
-        400
+        standardResponse(200, "Coupon validation completed", {
+          valid: false,
+          error_code: "redemption_expired",
+          error_message: "Redemption window expired (valid for 5 minutes only)",
+        })
       );
     }
 
     // Check coupon's own expiry
     if (coupon.expires_at && new Date(coupon.expires_at) < now) {
-      return c.json(standardResponse(400, "Coupon has expired"), 400);
+      // Business logic error: coupon expired - return 200 with error details
+      const expiredDate = new Date(coupon.expires_at).toLocaleDateString(
+        "en-US",
+        {
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        }
+      );
+      return c.json(
+        standardResponse(200, "Coupon validation completed", {
+          valid: false,
+          error_code: "coupon_expired",
+          error_message: `This coupon expired on ${expiredDate}`,
+        })
+      );
     }
 
     // Mark redemption as used
@@ -1246,25 +1377,20 @@ pos.openapi(validateCouponRoute, async (c) => {
     };
 
     const validationData = {
+      valid: true,
       redemption_id: redemption.id,
       coupon: couponData,
       shop: {
         id: shop.id,
         name: shop.name,
       },
-      valid: true,
-      message: `Coupon redeemed successfully. ${message}${scopeMessage}`,
     };
 
     logger.info(
       `Coupon redeemed successfully: ${redemption_id} for shop: ${shop_id}`
     );
     return c.json(
-      standardResponse(
-        200,
-        "Coupon validated and redeemed successfully",
-        validationData
-      )
+      standardResponse(200, "Coupon validation completed", validationData)
     );
   } catch (error) {
     logger.error("Error validating coupon:", error);
@@ -1279,7 +1405,10 @@ const stornoTransactionSchema = z.object({
 });
 
 const stornoResponseSchema = z.object({
-  pos_invoice_id: z.string(),
+  valid: z.boolean().optional(),
+  error_code: z.string().optional(),
+  error_message: z.string().optional(),
+  pos_invoice_id: z.string().optional(),
 });
 
 const stornoTransactionRoute = createRoute({
@@ -1425,9 +1554,13 @@ pos.openapi(stornoTransactionRoute, async (c) => {
       transaction.status === "cancelled" ||
       transaction.status === "refunded"
     ) {
+      // Business logic error: transaction already processed - return 200 with error details
       return c.json(
-        standardResponse(400, `Transaction is already ${transaction.status}`),
-        400
+        standardResponse(200, "Transaction storno completed", {
+          valid: false,
+          error_code: "already_processed",
+          error_message: `Transaction is already ${transaction.status}`,
+        })
       );
     }
 
@@ -1559,6 +1692,7 @@ pos.openapi(stornoTransactionRoute, async (c) => {
     }
 
     const responseData = {
+      valid: true,
       pos_invoice_id: transaction.pos_invoice_id,
     };
 

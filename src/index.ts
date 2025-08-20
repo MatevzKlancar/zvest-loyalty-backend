@@ -81,8 +81,17 @@ The Zvest Loyalty Platform enables businesses to implement loyalty programs with
 - **🏪 Shop Management**: Complete business dashboard for shop owners
 - **🎟️ Coupon Management**: Full CRUD operations with points-based rewards
 - **📊 Analytics Dashboard**: Real-time transaction and revenue insights
-- **🔌 POS Integration**: Simple REST API for point-of-sale systems
+- **🔌 Smart POS Integration**: Business-logic-friendly error handling for seamless POS integration
 - **📱 Mobile App Support**: Customer-facing endpoints for point redemption
+
+## 🎯 POS Integration Highlights
+
+**Business-Logic-Friendly Error Handling**: Unlike traditional APIs that return HTTP 400 for business rules (expired coupons, invalid codes), our POS endpoints return HTTP 200 with structured error details. This makes integration much simpler:
+
+- ✅ **No complex error handling needed** - all responses follow the same pattern
+- ✅ **Clear error messages for staff** - "This coupon expired on January 15, 2024"  
+- ✅ **Specific error codes for different scenarios** - \`coupon_expired\`, \`invalid_format\`, etc.
+- ✅ **Consistent response structure** - always check \`data.valid\` first
 
 ## Authentication
 
@@ -97,6 +106,43 @@ The Zvest Loyalty Platform enables businesses to implement loyalty programs with
 - Configure in environment: \`POS_PROVIDERS="Provider Name:api-key"\`
 
 **Public endpoints** (invitation setup) require no authentication.
+
+## POS Error Handling
+
+**Business Logic vs Technical Errors**: Our POS endpoints use a hybrid approach for optimal integration:
+
+**✅ Business Logic Errors → HTTP 200 OK**
+- Expired coupons, invalid codes, insufficient points
+- Always returns \`{ success: true, data: { valid: false, error_code: "...", error_message: "..." } }\`
+- POS systems can handle uniformly without complex error handling
+
+**❌ Technical Errors → HTTP 4xx/5xx**  
+- Invalid API keys (401), malformed requests (400), server errors (500)
+- Indicates actual integration problems requiring different handling
+
+\`\`\`javascript
+// Example: POS Coupon Validation
+const response = await fetch('/api/pos/coupons/validate', {
+  method: 'POST',
+  headers: { 'x-api-key': 'your-key', 'Content-Type': 'application/json' },
+  body: JSON.stringify({ shop_id: 'uuid', redemption_id: '123456' })
+});
+
+const data = await response.json();
+
+if (response.ok && data.success) {
+  if (data.data.valid) {
+    // ✅ Valid coupon - apply discount
+    applyCouponDiscount(data.data.coupon);
+  } else {
+    // ⚠️ Business rule error - show to staff
+    showMessage(data.data.error_message); // "Coupon expired on January 15, 2024"
+  }
+} else {
+  // ❌ Technical error - system issue
+  handleSystemError(response.status);
+}
+\`\`\`
 
 ## Quick Start Flow
 
@@ -205,6 +251,35 @@ app.get(
       ogTitle: "Zvest Loyalty Platform API Documentation",
     },
     searchHotKey: "k",
+    customCss: `
+      /* Highlight POS Integration section */
+      .scalar-api-reference [data-section-id*="pos"] {
+        border-left: 4px solid #10b981;
+        padding-left: 1rem;
+        background: rgba(16, 185, 129, 0.05);
+      }
+      
+      /* Style error code tables */
+      .scalar-api-reference table {
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      }
+      
+      /* Highlight success responses */
+      .scalar-api-reference [data-status="200"] {
+        border-left: 3px solid #10b981;
+      }
+      
+      /* Style error examples */
+      .scalar-api-reference .example-section {
+        border-radius: 6px;
+        margin: 0.5rem 0;
+      }
+    `,
+    showSidebar: true,
+    hideDownloadButton: false,
+    hideTestRequestButton: false,
   })
 );
 
