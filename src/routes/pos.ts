@@ -122,7 +122,7 @@ const couponResponseSchema = z.object({
   type: z.string(),
   articles: z.array(
     z.object({
-      article_id: z.string().uuid().nullable(),
+      article_id: z.string().nullable(), // POS article ID (e.g., "2493") or null for global coupons
       article_name: z.string().nullable(),
       discount_value: z.number(),
     })
@@ -148,7 +148,7 @@ const validatedCouponResponseSchema = z.object({
       type: z.string(), // "percentage" or "fixed"
       articles: z.array(
         z.object({
-          article_id: z.string().uuid().nullable(), // null = applies to whole invoice
+          article_id: z.string().nullable(), // null = applies to whole invoice, string = pos_article_id (e.g., "2493")
           article_name: z.string().nullable(), // Article name for display, null for global coupons
           discount_value: z.number(), // Percentage (0-100) or fixed amount, interpreted based on coupon.type
         })
@@ -963,6 +963,7 @@ This approach makes POS integration much simpler - no complex error handling nee
 | \`invalid_code\` | Code not found/already used | Ask customer to check code |
 | \`invalid_format\` | Wrong number of digits | Ask customer to re-enter |
 | \`wrong_shop\` | Coupon for different location | Explain location restriction |
+| \`article_not_found\` | Referenced item no longer available | Inform customer item unavailable |
 
 ## POS Integration Example
 \`\`\`javascript
@@ -983,7 +984,7 @@ if (result.data.valid) {
 ## Coupon Structure
 All coupons use a consistent \`articles\` array format:
 - **Global Coupons**: \`articles[0].article_id = null\` (applies to entire invoice)
-- **Single-Article Coupons**: \`articles[0].article_id = "uuid"\` (applies to specific item)
+- **Single-Article Coupons**: \`articles[0].article_id = "2493"\` (POS article ID, applies to specific item)
 - **Multi-Article Coupons**: Multiple items in \`articles\` array with different discount values
 
 ## Important Notes
@@ -1036,7 +1037,7 @@ All coupons use a consistent \`articles\` array format:
                     type: "percentage",
                     articles: [
                       {
-                        article_id: null,
+                        article_id: null, // Global coupon - applies to entire invoice
                         article_name: null,
                         discount_value: 20,
                       },
@@ -1107,6 +1108,19 @@ All coupons use a consistent \`articles\` array format:
                   valid: false,
                   error_code: "invalid_format",
                   error_message: "Redemption code too short - must be 6 digits",
+                },
+              },
+            },
+            articleNotFound: {
+              summary: "Referenced Article No Longer Available",
+              value: {
+                success: true,
+                message: "Coupon validation completed",
+                data: {
+                  valid: false,
+                  error_code: "article_not_found",
+                  error_message:
+                    "One or more items in this coupon are no longer available",
                 },
               },
             },
@@ -1352,20 +1366,112 @@ pos.openapi(validateCouponRoute, async (c) => {
         ? coupon.articles_data
         : JSON.parse(coupon.articles_data);
 
-      articles = articlesData.map((article: any) => ({
-        article_id: article.article_id,
-        article_name: article.article_name,
-        discount_value: article.discount_value,
-      }));
+      // Get pos_article_id mappings for all internal article_ids
+      const internalArticleIds = articlesData
+        .map((article: any) => article.article_id)
+        .filter((id: any) => id !== null); // Filter out global coupons (null article_id)
+
+      let articleMappings: any[] = [];
+      if (internalArticleIds.length > 0) {
+        const { data: mappings, error: mappingError } = await supabase
+          .from("articles")
+          .select("id, pos_article_id, name")
+          .eq("shop_id", shop_id)
+          .in("id", internalArticleIds);
+
+        if (mappingError) {
+          logger.error("Failed to get article mappings:", mappingError);
+          return c.json(
+            standardResponse(500, "Failed to process coupon validation"),
+            500
+          );
+        } else {
+          articleMappings = mappings || [];
+        }
+      }
+
+      // Check if all required articles have mappings before processing
+      for (const article of articlesData) {
+        if (article.article_id !== null) {
+          const mapping = articleMappings.find(
+            (m) => m.id === article.article_id
+          );
+          if (!mapping) {
+            logger.error(
+              `Article mapping not found for article_id: ${article.article_id}`
+            );
+            // This could happen if the article was deleted after coupon creation
+            return c.json(
+              standardResponse(200, "Coupon validation completed", {
+                valid: false,
+                error_code: "article_not_found",
+                error_message:
+                  "One or more items in this coupon are no longer available",
+              })
+            );
+          }
+        }
+      }
+
+      articles = articlesData.map((article: any) => {
+        if (article.article_id === null) {
+          // Global coupon - applies to entire invoice
+          return {
+            article_id: null,
+            article_name: null,
+            discount_value: article.discount_value,
+          };
+        } else {
+          // Find the pos_article_id mapping (we know it exists from check above)
+          const mapping = articleMappings.find(
+            (m) => m.id === article.article_id
+          )!; // Non-null assertion since we validated above
+          return {
+            article_id: mapping.pos_article_id, // Use POS article ID
+            article_name: mapping.name,
+            discount_value: article.discount_value,
+          };
+        }
+      });
     } else {
       // Traditional single-article or global coupon - convert to articles array
-      articles = [
-        {
-          article_id: coupon.article_id, // null = whole invoice, UUID = specific article
-          article_name: null, // We don't have article name in traditional coupons
-          discount_value: coupon.value,
-        },
-      ];
+      if (coupon.article_id === null) {
+        // Global coupon
+        articles = [
+          {
+            article_id: null, // null = whole invoice
+            article_name: null,
+            discount_value: coupon.value,
+          },
+        ];
+      } else {
+        // Single article coupon - need to get pos_article_id
+        const { data: articleMapping, error: mappingError } = await supabase
+          .from("articles")
+          .select("pos_article_id, name")
+          .eq("shop_id", shop_id)
+          .eq("id", coupon.article_id)
+          .single();
+
+        if (mappingError) {
+          logger.error(
+            "Failed to get article mapping for traditional coupon:",
+            mappingError
+          );
+          return c.json(
+            standardResponse(500, "Failed to process coupon validation"),
+            500
+          );
+        } else {
+          articles = [
+            {
+              article_id: articleMapping.pos_article_id, // Use POS article ID
+              article_name: articleMapping.name,
+              discount_value: coupon.value,
+            },
+          ];
+        }
+      }
     }
 
     const couponData = {
