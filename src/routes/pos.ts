@@ -8,6 +8,12 @@ import {
   isValidRedemptionCodeFormat,
   normalizeRedemptionCode,
 } from "../utils/redemption-code";
+import {
+  getValidationMessage,
+  createLocalizedError,
+  createLocalizedErrorForShop,
+  ErrorCode,
+} from "../utils/localization";
 
 const pos = new OpenAPIHono<AuthContext>();
 
@@ -16,7 +22,7 @@ pos.use("*", authenticatePOSProvider);
 
 // Schemas
 const enableShopSchema = z.object({
-  pos_shop_id: z.string().min(1, "POS shop ID is required"),
+  pos_shop_id: z.string().min(1, "POS shop ID is required"), // Keep English for internal API
   pos_data: z.record(z.any()).optional(), // Any POS-specific data
 });
 
@@ -51,17 +57,19 @@ const syncArticlesSchema = z.object({
 });
 
 const createTransactionSchema = z.object({
-  shop_id: z.string().uuid("Invalid shop ID"),
-  pos_invoice_id: z.string().min(1, "POS invoice ID is required"),
-  total_amount: z.number().min(0, "Total amount must be positive"),
-  tax_amount: z.number().min(0).optional(),
+  shop_id: z.string().uuid(getValidationMessage("invalid_shop_id")),
+  pos_invoice_id: z
+    .string()
+    .min(1, getValidationMessage("pos_invoice_id_required")),
+  total_amount: z.number(), // Removed min(0) to allow negative amounts (refunds/returns)
+  tax_amount: z.number().optional(), // Removed min(0) to allow negative tax adjustments
   items: z.array(
     z.object({
       pos_article_id: z.string(),
       name: z.string(),
-      quantity: z.number().min(0),
-      unit_price: z.number().min(0),
-      total_price: z.number().min(0),
+      quantity: z.number(), // Removed min(0) to allow negative quantities (refunds/discounts)
+      unit_price: z.number(), // Removed min(0) to allow negative unit prices (discounts)
+      total_price: z.number(), // Removed min(0) to allow negative total prices (refunds/discounts)
       tax_rate: z.number().optional(),
     })
   ),
@@ -69,11 +77,11 @@ const createTransactionSchema = z.object({
 });
 
 const validateCouponSchema = z.object({
-  shop_id: z.string().uuid("Invalid shop ID"),
+  shop_id: z.string().uuid(getValidationMessage("invalid_shop_id")),
   redemption_id: z
     .string()
-    .min(1, "Redemption code is required")
-    .max(20, "Redemption code too long"), // Allow longer codes for better error handling
+    .min(1, getValidationMessage("redemption_code_required"))
+    .max(20, getValidationMessage("coupon_code_too_long")), // Allow longer codes for better error handling
 });
 
 // Base shop schema for normal responses
@@ -662,10 +670,10 @@ pos.openapi(createTransactionRoute, async (c) => {
     const transactionData = c.req.valid("json");
     const posProvider = c.get("posProvider");
 
-    // Verify shop belongs to POS provider and is active
+    // Verify shop belongs to POS provider and is active, get settings for localization
     const { data: shop, error: shopError } = await supabase
       .from("shops")
-      .select("id, name")
+      .select("id, name, settings")
       .eq("id", transactionData.shop_id)
       .eq("pos_provider_id", posProvider.id)
       .eq("status", "active")
@@ -689,11 +697,14 @@ pos.openapi(createTransactionRoute, async (c) => {
     if (existingTransaction) {
       // Business logic error: duplicate invoice ID - return 200 with error details
       return c.json(
-        standardResponse(200, "Transaction creation completed", {
-          valid: false,
-          error_code: "duplicate_invoice",
-          error_message: `Transaction with invoice ID '${transactionData.pos_invoice_id}' already exists for this shop`,
-        })
+        standardResponse(
+          200,
+          "Transaction creation completed",
+          createLocalizedErrorForShop(
+            "transaction_duplicate_invoice",
+            shop.settings
+          )
+        )
       );
     }
 
@@ -1176,29 +1187,27 @@ pos.openapi(validateCouponRoute, async (c) => {
     // Check code format - handle different cases
     if (!isValidRedemptionCodeFormat(normalizedCode)) {
       // Business logic error: code format invalid (too short/long, not digits)
-      let errorMessage = "Invalid redemption code format";
+      let errorCode: ErrorCode = "coupon_invalid_format";
 
       if (normalizedCode.length < 6) {
-        errorMessage = "Redemption code too short - must be 6 digits";
+        errorCode = "coupon_code_too_short";
       } else if (normalizedCode.length > 6) {
-        errorMessage = "Redemption code too long - must be 6 digits";
-      } else if (!/^\d{6}$/.test(normalizedCode)) {
-        errorMessage = "Redemption code must contain only digits";
+        errorCode = "coupon_code_too_long";
       }
 
       return c.json(
-        standardResponse(200, "Coupon validation completed", {
-          valid: false,
-          error_code: "invalid_format",
-          error_message: errorMessage,
-        })
+        standardResponse(
+          200,
+          "Coupon validation completed",
+          createLocalizedError(errorCode) // Use default locale since we don't have shop context yet
+        )
       );
     }
 
-    // Verify shop belongs to POS provider
+    // Verify shop belongs to POS provider and get settings for localization
     const { data: shop, error: shopError } = await supabase
       .from("shops")
-      .select("id, name")
+      .select("id, name, settings")
       .eq("id", shop_id)
       .eq("pos_provider_id", posProvider.id)
       .eq("status", "active")
@@ -1240,11 +1249,11 @@ pos.openapi(validateCouponRoute, async (c) => {
     if (redemptionError || !redemption) {
       // Business logic error: code not found or already used - return 200 with error details
       return c.json(
-        standardResponse(200, "Coupon validation completed", {
-          valid: false,
-          error_code: "invalid_code",
-          error_message: "Redemption code not found or invalid",
-        })
+        standardResponse(
+          200,
+          "Coupon validation completed",
+          createLocalizedErrorForShop("coupon_not_found", shop.settings)
+        )
       );
     }
 
@@ -1254,11 +1263,11 @@ pos.openapi(validateCouponRoute, async (c) => {
     if (coupon.shop_id !== shop_id) {
       // Business logic error: wrong shop - return 200 with error details
       return c.json(
-        standardResponse(200, "Coupon validation completed", {
-          valid: false,
-          error_code: "wrong_shop",
-          error_message: "This coupon cannot be used at this location",
-        })
+        standardResponse(
+          200,
+          "Coupon validation completed",
+          createLocalizedErrorForShop("shop_not_found", shop.settings)
+        )
       );
     }
 
@@ -1276,11 +1285,11 @@ pos.openapi(validateCouponRoute, async (c) => {
 
       // Business logic error: redemption window expired - return 200 with error details
       return c.json(
-        standardResponse(200, "Coupon validation completed", {
-          valid: false,
-          error_code: "redemption_expired",
-          error_message: "Redemption window expired (valid for 5 minutes only)",
-        })
+        standardResponse(
+          200,
+          "Coupon validation completed",
+          createLocalizedErrorForShop("coupon_expired", shop.settings)
+        )
       );
     }
 
@@ -1296,11 +1305,11 @@ pos.openapi(validateCouponRoute, async (c) => {
         }
       );
       return c.json(
-        standardResponse(200, "Coupon validation completed", {
-          valid: false,
-          error_code: "coupon_expired",
-          error_message: `This coupon expired on ${expiredDate}`,
-        })
+        standardResponse(
+          200,
+          "Coupon validation completed",
+          createLocalizedErrorForShop("coupon_expired", shop.settings)
+        )
       );
     }
 
@@ -1402,12 +1411,11 @@ pos.openapi(validateCouponRoute, async (c) => {
             );
             // This could happen if the article was deleted after coupon creation
             return c.json(
-              standardResponse(200, "Coupon validation completed", {
-                valid: false,
-                error_code: "article_not_found",
-                error_message:
-                  "One or more items in this coupon are no longer available",
-              })
+              standardResponse(
+                200,
+                "Coupon validation completed",
+                createLocalizedErrorForShop("coupon_not_active", shop.settings)
+              )
             );
           }
         }
@@ -1638,7 +1646,8 @@ pos.openapi(stornoTransactionRoute, async (c) => {
         shops!inner(
           id,
           name,
-          pos_provider_id
+          pos_provider_id,
+          settings
         )
       `
       )
@@ -1654,6 +1663,17 @@ pos.openapi(stornoTransactionRoute, async (c) => {
     }
 
     const previousStatus = transaction.status;
+    // Extract shop data from Supabase inner join result (shops is an array with one element)
+    const shop = (
+      transaction as {
+        shops: Array<{
+          id: string;
+          name: string;
+          pos_provider_id: string;
+          settings: any;
+        }>;
+      }
+    ).shops[0];
 
     // Check if transaction can be cancelled
     if (
@@ -1662,11 +1682,14 @@ pos.openapi(stornoTransactionRoute, async (c) => {
     ) {
       // Business logic error: transaction already processed - return 200 with error details
       return c.json(
-        standardResponse(200, "Transaction storno completed", {
-          valid: false,
-          error_code: "already_processed",
-          error_message: `Transaction is already ${transaction.status}`,
-        })
+        standardResponse(
+          200,
+          "Transaction storno completed",
+          createLocalizedErrorForShop(
+            "transaction_already_processed",
+            shop.settings
+          )
+        )
       );
     }
 
