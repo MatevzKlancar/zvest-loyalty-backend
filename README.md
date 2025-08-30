@@ -71,14 +71,21 @@ This approach ensures:
 
 ### POS Provider Endpoints
 
+**⚠️ Important: POS endpoints return POS article IDs, not internal UUIDs**
+
 ```
 GET    /api/pos/shops                    # Get active shops for POS provider
 POST   /api/pos/shops/sync               # Sync shop with POS system data
-GET    /api/pos/shops/{id}/coupons       # Get active coupons for shop
+GET    /api/pos/shops/{id}/coupons       # Get active coupons for shop (returns POS article IDs)
 POST   /api/pos/shops/{id}/articles      # Update shop menu/articles
 POST   /api/pos/transactions             # Save transaction for loyalty processing
-POST   /api/pos/coupons/validate         # Validate and use customer coupons
+POST   /api/pos/coupons/validate         # Validate and use customer coupons (returns POS article IDs)
 ```
+
+**Article ID Mapping:**
+- POS systems send their article IDs (e.g., "2493", "coffee-latte") 
+- System stores both internal UUIDs and POS article IDs
+- All POS endpoints automatically return POS article IDs for seamless integration
 
 ### Customer App Endpoints
 

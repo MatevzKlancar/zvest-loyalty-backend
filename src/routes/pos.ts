@@ -856,8 +856,20 @@ const getShopCouponsRoute = createRoute({
   method: "get",
   path: "/shops/{shop_id}/coupons",
   summary: "Get active coupons for shop",
-  description:
-    "Returns all active coupons available for the shop that can be redeemed by customers",
+  description: `
+Returns all active coupons available for the shop that can be redeemed by customers.
+
+**Important for POS Integration:**
+- All \`article_id\` fields in the response contain **POS article IDs** (not internal UUIDs)
+- Global coupons have \`article_id: null\` (apply to entire invoice)
+- POS systems can directly use these article IDs without additional mapping
+
+**Data Flow:**
+1. Coupons are stored with internal article IDs in the database
+2. This endpoint automatically maps internal IDs to your POS article IDs
+3. You receive consistent POS-friendly identifiers
+
+This ensures POS systems always work with their own article identifiers.`,
   tags: ["POS Integration"],
   security: [{ ApiKeyAuth: [] }],
   request: {
@@ -916,13 +928,114 @@ pos.openapi(getShopCouponsRoute, async (c) => {
       return c.json(standardResponse(500, "Failed to fetch coupons"), 500);
     }
 
-    // Transform response to include articles array
-    const transformedCoupons =
-      coupons?.map((coupon) => ({
-        ...coupon,
-        articles: coupon.articles_data || [],
-        articles_data: undefined, // Remove from response
-      })) || [];
+    // Transform response to include articles array with POS article IDs
+    // IMPORTANT: POS endpoints must return POS article IDs, not internal UUIDs
+    // Internal workflow: Database stores internal UUIDs -> Map to POS IDs -> Return to POS
+    // This ensures POS systems work with their own identifiers consistently
+
+    // First, get all internal article IDs that need mapping
+    const allInternalArticleIds = new Set<string>();
+
+    coupons?.forEach((coupon) => {
+      if (coupon.articles_data) {
+        const articlesData = Array.isArray(coupon.articles_data)
+          ? coupon.articles_data
+          : JSON.parse(coupon.articles_data);
+
+        articlesData.forEach((article: any) => {
+          if (article.article_id && article.article_id !== null) {
+            allInternalArticleIds.add(article.article_id);
+          }
+        });
+      }
+    });
+
+    // Get article mappings for all internal IDs (batch query for efficiency)
+    let articleMappings: {
+      [key: string]: { pos_article_id: string; name: string };
+    } = {};
+
+    if (allInternalArticleIds.size > 0) {
+      const { data: mappings, error: mappingError } = await supabase
+        .from("articles")
+        .select("id, pos_article_id, name")
+        .eq("shop_id", shop_id)
+        .in("id", Array.from(allInternalArticleIds));
+
+      if (mappingError) {
+        logger.error(
+          "Failed to get article mappings for POS coupons:",
+          mappingError
+        );
+        return c.json(standardResponse(500, "Failed to process coupons"), 500);
+      }
+
+      // Create lookup map: internal_id -> {pos_article_id, name}
+      mappings?.forEach((mapping) => {
+        articleMappings[mapping.id] = {
+          pos_article_id: mapping.pos_article_id,
+          name: mapping.name,
+        };
+      });
+    }
+
+    // Transform coupons with proper POS article ID mapping
+    let transformedCoupons;
+    try {
+      transformedCoupons = coupons?.map((coupon) => {
+        let mappedArticles = [];
+
+        if (coupon.articles_data) {
+          const articlesData = Array.isArray(coupon.articles_data)
+            ? coupon.articles_data
+            : JSON.parse(coupon.articles_data);
+
+          mappedArticles = articlesData.map((article: any) => {
+            if (
+              article.article_id === null ||
+              article.article_id === undefined
+            ) {
+              // Global coupon - applies to entire invoice
+              return {
+                article_id: null,
+                article_name: null,
+                discount_value: article.discount_value,
+              };
+            } else {
+              // Map internal article_id to pos_article_id
+              const mapping = articleMappings[article.article_id];
+              if (mapping) {
+                return {
+                  article_id: mapping.pos_article_id, // Use POS article ID
+                  article_name: mapping.name,
+                  discount_value: article.discount_value,
+                };
+              } else {
+                // Article not found (might be deleted) - this is a critical error for POS
+                logger.error(
+                  `Critical error: Article mapping not found for article_id: ${article.article_id} in coupon ${coupon.id}. Cannot return internal UUID to POS system.`
+                );
+                // Return error immediately - don't risk sending internal UUIDs to POS
+                throw new Error(`Article mapping not found for coupon ${coupon.id}. This coupon references a deleted article.`);
+              }
+            }
+          });
+        }
+
+        return {
+          ...coupon,
+          articles: mappedArticles, // Use mapped articles with POS IDs
+          articles_data: undefined, // Remove from response
+        };
+      }) || [];
+    } catch (mappingError) {
+      // Critical error: coupon references deleted articles
+      logger.error("Failed to map article IDs for POS coupons:", mappingError);
+      return c.json(
+        standardResponse(500, "Coupon contains invalid article references. Please contact support."),
+        500
+      );
+    }
 
     return c.json(
       standardResponse(
