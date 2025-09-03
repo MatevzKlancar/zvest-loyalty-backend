@@ -6,6 +6,30 @@ import { standardResponse } from "../middleware/error";
 
 const appUser = new OpenAPIHono();
 
+// Helper function to get app_user by either email or UUID
+async function getAppUserByIdentifier(identifier: string) {
+  // Check if identifier is a UUID (rough check)
+  const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+  
+  if (isUUID) {
+    // Try to get user by ID first
+    const { data: user, error } = await supabase
+      .from("app_users")
+      .select("id, email, phone_number")
+      .eq("id", identifier)
+      .single();
+    return { data: user, error };
+  } else {
+    // Try to get user by email
+    const { data: user, error } = await supabase
+      .from("app_users")
+      .select("id, email, phone_number")
+      .eq("email", identifier)
+      .single();
+    return { data: user, error };
+  }
+}
+
 // ===========================
 // B2C APP USER PROFILE ENDPOINT
 // ===========================
@@ -77,7 +101,21 @@ appUser.openapi(appUserProfileRoute, async (c) => {
   try {
     const { email, phone } = c.req.valid("query");
 
-    // Get user's loyalty accounts
+    // Get app_user by email
+    const { data: appUser, error: userError } = await supabase
+      .from("app_users")
+      .select("id, email, phone_number")
+      .eq("email", email)
+      .single();
+
+    if (userError || !appUser) {
+      return c.json(
+        standardResponse(404, "User not found"),
+        404
+      );
+    }
+
+    // Get user's loyalty accounts using app_user_id
     const { data: loyaltyAccounts, error: loyaltyError } = await supabase
       .from("customer_loyalty_accounts")
       .select(
@@ -91,7 +129,7 @@ appUser.openapi(appUserProfileRoute, async (c) => {
         )
       `
       )
-      .eq("customer_email", email)
+      .eq("app_user_id", appUser.id)
       .order("created_at", { ascending: false });
 
     if (loyaltyError) {
@@ -102,23 +140,23 @@ appUser.openapi(appUserProfileRoute, async (c) => {
       );
     }
 
-    // Get recent transactions
+    // Get recent transactions using app_user_id
     const { data: transactions, error: transError } = await supabase
       .from("transactions")
       .select(
         `
         id,
-        amount,
-        points_earned,
-        points_redeemed,
+        total_amount,
+        loyalty_points_awarded,
+        loyalty_points_redeemed,
         created_at,
-        type,
+        transaction_type,
         shops!inner (
           name
         )
       `
       )
-      .eq("customer_email", email)
+      .eq("app_user_id", appUser.id)
       .order("created_at", { ascending: false })
       .limit(10);
 
@@ -145,11 +183,11 @@ appUser.openapi(appUserProfileRoute, async (c) => {
       transactions?.map((transaction) => ({
         id: transaction.id,
         shop_name: transaction.shops[0]?.name || "Unknown Shop",
-        amount: transaction.amount,
-        points_earned: transaction.points_earned,
-        points_redeemed: transaction.points_redeemed,
+        amount: transaction.total_amount,
+        points_earned: transaction.loyalty_points_awarded,
+        points_redeemed: transaction.loyalty_points_redeemed,
         transaction_date: transaction.created_at,
-        transaction_type: transaction.type,
+        transaction_type: transaction.transaction_type || "purchase",
       })) || [];
 
     // Mock user preferences (in real app, this would come from a user_preferences table)
@@ -161,8 +199,8 @@ appUser.openapi(appUserProfileRoute, async (c) => {
 
     const profileData = {
       user_type: "app_user",
-      email,
-      phone,
+      email: appUser.email,
+      phone: appUser.phone_number || phone,
       loyalty_accounts: formattedLoyaltyAccounts,
       recent_transactions: formattedTransactions,
       user_preferences: userPreferences,
@@ -280,33 +318,37 @@ appUser.openapi(getUserLoyaltyForStoreRoute, async (c) => {
   try {
     const { userId, storeId } = c.req.valid("param");
 
-    // Get user's loyalty account for the specific store
+    // Get app_user by either email or UUID
+    const { data: appUser, error: userError } = await getAppUserByIdentifier(userId);
+
+    if (userError || !appUser) {
+      return c.json(
+        standardResponse(404, "User not found"),
+        404
+      );
+    }
+
+    // Get user's loyalty account for the specific store using app_user_id
     const { data: loyaltyAccount, error: loyaltyError } = await supabase
       .from("customer_loyalty_accounts")
       .select(
         `
-        customer_email,
-        customer_phone,
+        app_user_id,
         shop_id,
         points_balance,
-        total_points_earned,
-        total_points_redeemed,
         total_spent,
-        visits_count,
-        last_visit_date,
-        is_favorite,
-        tier,
+        last_visit_at,
+        is_active,
         created_at,
         shops!inner (
           id,
           name,
           type,
-          loyalty_type,
           status
         )
       `
       )
-      .eq("customer_email", userId) // Using email as user ID
+      .eq("app_user_id", appUser.id)
       .eq("shop_id", storeId)
       .eq("shops.status", "active")
       .single();
@@ -318,32 +360,32 @@ appUser.openapi(getUserLoyaltyForStoreRoute, async (c) => {
       );
     }
 
-    // Get last transaction date
+    // Get last transaction date using app_user_id
     const { data: lastTransaction } = await supabase
       .from("transactions")
       .select("created_at")
       .eq("shop_id", storeId)
-      .eq("customer_email", userId)
+      .eq("app_user_id", appUser.id)
       .order("created_at", { ascending: false })
       .limit(1)
       .single();
 
     const shop = loyaltyAccount.shops as any;
     const loyaltyData = {
-      user_id: userId,
+      user_id: appUser.email, // Return email as user_id for API consistency
       shop_id: loyaltyAccount.shop_id,
       shop_name: shop.name,
       shop_type: shop.type,
-      loyalty_type: shop.loyalty_type,
+      loyalty_type: 'points', // Default value since field may not exist
       points_balance: loyaltyAccount.points_balance,
-      total_points_earned: loyaltyAccount.total_points_earned,
-      total_points_redeemed: loyaltyAccount.total_points_redeemed,
+      total_points_earned: 0, // Will need to calculate from transactions
+      total_points_redeemed: 0, // Will need to calculate from transactions
       total_spent: loyaltyAccount.total_spent,
-      visits_count: loyaltyAccount.visits_count,
-      last_visit_date: loyaltyAccount.last_visit_date,
+      visits_count: 0, // Field not available in current schema
+      last_visit_date: loyaltyAccount.last_visit_at,
       last_transaction_date: lastTransaction?.created_at || null,
-      tier: loyaltyAccount.tier,
-      is_favorite: loyaltyAccount.is_favorite,
+      tier: null, // Not available in current schema
+      is_favorite: loyaltyAccount.is_active, // Use is_active as proxy
       created_at: loyaltyAccount.created_at,
     };
 
@@ -436,39 +478,43 @@ appUser.openapi(getUserLoyaltyAllStoresRoute, async (c) => {
     const limitNum = parseInt(limit, 10) || 50;
     const offsetNum = parseInt(offset, 10) || 0;
 
-    // Build query for loyalty accounts
+    // Get app_user by either email or UUID
+    const { data: appUser, error: userError } = await getAppUserByIdentifier(userId);
+
+    if (userError || !appUser) {
+      return c.json(
+        standardResponse(404, "User not found"),
+        404
+      );
+    }
+
+    // Build query for loyalty accounts using app_user_id
     let query = supabase
       .from("customer_loyalty_accounts")
       .select(
         `
-        customer_email,
-        customer_phone,
+        app_user_id,
         shop_id,
         points_balance,
-        total_points_earned,
-        total_points_redeemed,
         total_spent,
-        visits_count,
-        last_visit_date,
-        is_favorite,
-        tier,
+        last_visit_at,
+        is_active,
         created_at,
         shops!inner (
           id,
           name,
           type,
-          loyalty_type,
           status
         )
       `
       )
-      .eq("customer_email", userId) // Using email as user ID
+      .eq("app_user_id", appUser.id)
       .eq("shops.status", "active")
-      .order("total_points_earned", { ascending: false });
+      .order("points_balance", { ascending: false });
 
     // Apply filters
     if (favorites_only === "true") {
-      query = query.eq("is_favorite", true);
+      query = query.eq("is_active", true); // Use is_active as proxy for favorites
     }
 
     // Apply pagination
@@ -492,12 +538,12 @@ appUser.openapi(getUserLoyaltyAllStoresRoute, async (c) => {
       );
     }
 
-    // Get recent transaction dates for each store
+    // Get recent transaction dates for each store using app_user_id
     const storeIds = loyaltyAccounts.map((acc) => acc.shop_id);
     const { data: recentTransactions } = await supabase
       .from("transactions")
       .select("shop_id, created_at")
-      .eq("customer_email", userId)
+      .eq("app_user_id", appUser.id)
       .in("shop_id", storeIds)
       .order("created_at", { ascending: false });
 
@@ -513,20 +559,20 @@ appUser.openapi(getUserLoyaltyAllStoresRoute, async (c) => {
     const formattedAccounts = loyaltyAccounts.map((account) => {
       const shop = account.shops as any;
       return {
-        user_id: userId,
+        user_id: appUser.email, // Return email as user_id for API consistency
         shop_id: account.shop_id,
         shop_name: shop.name,
         shop_type: shop.type,
-        loyalty_type: shop.loyalty_type,
+        loyalty_type: 'points', // Default value since field may not exist
         points_balance: account.points_balance,
-        total_points_earned: account.total_points_earned,
-        total_points_redeemed: account.total_points_redeemed,
+        total_points_earned: 0, // Will need to calculate from transactions
+        total_points_redeemed: 0, // Will need to calculate from transactions
         total_spent: account.total_spent,
-        visits_count: account.visits_count,
-        last_visit_date: account.last_visit_date,
+        visits_count: 0, // Field not available in current schema
+        last_visit_date: account.last_visit_at,
         last_transaction_date: lastTransactionMap.get(account.shop_id) || null,
-        tier: account.tier,
-        is_favorite: account.is_favorite,
+        tier: null, // Not available in current schema
+        is_favorite: account.is_active, // Use is_active as proxy for favorite
         created_at: account.created_at,
       };
     });
@@ -544,13 +590,10 @@ appUser.openapi(getUserLoyaltyAllStoresRoute, async (c) => {
     // Filter favorite stores
     const favoriteStores = formattedAccounts.filter((acc) => acc.is_favorite);
 
-    // Get user contact info (using first account)
-    const userPhone = loyaltyAccounts[0]?.customer_phone || null;
-
     const loyaltyData = {
-      user_id: userId,
-      email: userId, // Using email as user ID
-      phone: userPhone,
+      user_id: appUser.email, // Return email as user_id for API consistency
+      email: appUser.email,
+      phone: appUser.phone_number,
       total_points_all_stores: totalPointsAllStores,
       total_spent_all_stores: totalSpentAllStores,
       loyalty_accounts: formattedAccounts,
@@ -703,7 +746,21 @@ appUser.openapi(getUserTransactionsRoute, async (c) => {
     const limitNum = parseInt(limit, 10) || 50;
     const offsetNum = parseInt(offset, 10) || 0;
 
-    // Build query for transactions
+    // Get app_user by email first
+    const { data: appUser, error: userError } = await supabase
+      .from("app_users")
+      .select("id, email, phone_number")
+      .eq("email", userId)
+      .single();
+
+    if (userError || !appUser) {
+      return c.json(
+        standardResponse(404, "User not found"),
+        404
+      );
+    }
+
+    // Build query for transactions using app_user_id
     let query = supabase
       .from("transactions")
       .select(
@@ -730,7 +787,7 @@ appUser.openapi(getUserTransactionsRoute, async (c) => {
       `,
         { count: "exact" }
       )
-      .eq("customer_email", userId) // Using email as user ID
+      .eq("app_user_id", appUser.id)
       .eq("shops.status", "active")
       .order("created_at", { ascending: false });
 
@@ -769,14 +826,6 @@ appUser.openapi(getUserTransactionsRoute, async (c) => {
         404
       );
     }
-
-    // Get user contact info from first transaction
-    const userPhone = await supabase
-      .from("customer_loyalty_accounts")
-      .select("customer_phone")
-      .eq("customer_email", userId)
-      .limit(1)
-      .single();
 
     // Format transactions data
     const formattedTransactions = transactions.map((transaction) => {
@@ -849,9 +898,9 @@ appUser.openapi(getUserTransactionsRoute, async (c) => {
     });
 
     const transactionData = {
-      user_id: userId,
-      email: userId, // Using email as user ID
-      phone: userPhone?.data?.customer_phone || null,
+      user_id: appUser.email, // Return email as user_id for API consistency
+      email: appUser.email,
+      phone: appUser.phone_number,
       total_transactions: totalTransactions,
       total_spent: totalSpent,
       total_points_earned: totalPointsEarned,
@@ -1030,24 +1079,22 @@ appUser.openapi(updateUserProfileRoute, async (c) => {
     const { userId } = c.req.valid("param");
     const updateData = c.req.valid("json");
 
-    // Check if user exists by looking for their loyalty accounts
+    // Get app_user by email first
     const { data: existingUser, error: userCheckError } = await supabase
-      .from("customer_loyalty_accounts")
-      .select("customer_email, customer_phone")
-      .eq("customer_email", userId)
-      .limit(1)
+      .from("app_users")
+      .select("id, email, phone_number")
+      .eq("email", userId)
       .single();
 
     if (userCheckError || !existingUser) {
       return c.json(standardResponse(404, "User not found"), 404);
     }
 
-    // Update or create user profile in app_users table
+    // Update user profile in app_users table
     const { data: updatedProfile, error: updateError } = await supabase
       .from("app_users")
-      .upsert({
-        email: userId,
-        phone_number: updateData.phone || existingUser.customer_phone,
+      .update({
+        phone_number: updateData.phone || existingUser.phone_number,
         first_name: updateData.first_name,
         last_name: updateData.last_name,
         date_of_birth: updateData.date_of_birth,
@@ -1060,6 +1107,7 @@ appUser.openapi(updateUserProfileRoute, async (c) => {
         address: updateData.address,
         updated_at: new Date().toISOString(),
       })
+      .eq("id", existingUser.id)
       .select()
       .single();
 
@@ -1071,19 +1119,11 @@ appUser.openapi(updateUserProfileRoute, async (c) => {
       );
     }
 
-    // Update phone number in loyalty accounts if provided
-    if (updateData.phone && updateData.phone !== existingUser.customer_phone) {
-      await supabase
-        .from("customer_loyalty_accounts")
-        .update({ customer_phone: updateData.phone })
-        .eq("customer_email", userId);
-    }
-
-    // Get updated user info with loyalty stats
+    // Get updated user info with loyalty stats using app_user_id
     const { data: loyaltyStats } = await supabase
       .from("customer_loyalty_accounts")
       .select("points_balance, created_at")
-      .eq("customer_email", userId);
+      .eq("app_user_id", existingUser.id);
 
     const loyaltyAccountsCount = loyaltyStats?.length || 0;
     const totalPointsBalance =
@@ -1097,18 +1137,18 @@ appUser.openapi(updateUserProfileRoute, async (c) => {
           )[0].created_at
         : new Date().toISOString();
 
-    // Get last activity (most recent transaction)
+    // Get last activity (most recent transaction) using app_user_id
     const { data: lastTransaction } = await supabase
       .from("transactions")
       .select("created_at")
-      .eq("customer_email", userId)
+      .eq("app_user_id", existingUser.id)
       .order("created_at", { ascending: false })
       .limit(1)
       .single();
 
     const profileData = {
-      user_id: userId,
-      email: userId,
+      user_id: updatedProfile.email, // Return email as user_id for API consistency
+      email: updatedProfile.email,
       phone: updatedProfile.phone_number,
       first_name: updatedProfile.first_name,
       last_name: updatedProfile.last_name,
@@ -1248,10 +1288,9 @@ appUser.openapi(deleteUserAccountRoute, async (c) => {
 
     // Check if user exists
     const { data: existingUser, error: userCheckError } = await supabase
-      .from("customer_loyalty_accounts")
-      .select("customer_email")
-      .eq("customer_email", userId)
-      .limit(1)
+      .from("app_users")
+      .select("id, email")
+      .eq("email", userId)
       .single();
 
     if (userCheckError || !existingUser) {
@@ -1267,22 +1306,22 @@ appUser.openapi(deleteUserAccountRoute, async (c) => {
       await supabase
         .from("transactions")
         .update({
-          customer_email: anonymizedEmail,
           metadata: {
             deletion_date: deletionTimestamp,
             deletion_reason: reason || "User requested account deletion",
+            anonymized_email: anonymizedEmail,
           },
         })
-        .eq("customer_email", userId);
+        .eq("app_user_id", existingUser.id);
 
       // 2. Delete loyalty accounts
       await supabase
         .from("customer_loyalty_accounts")
         .delete()
-        .eq("customer_email", userId);
+        .eq("app_user_id", existingUser.id);
 
       // 3. Delete user profile
-      await supabase.from("app_users").delete().eq("email", userId);
+      await supabase.from("app_users").delete().eq("id", existingUser.id);
 
       // 4. Log the deletion for audit trail
       await supabase.from("user_deletions").insert({
