@@ -233,11 +233,10 @@ const userLoyaltyResponseSchema = z.object({
   total_points_earned: z.number(),
   total_points_redeemed: z.number(),
   total_spent: z.number(),
-  visits_count: z.number(),
+  invoice_count: z.number(),
   last_visit_date: z.string().nullable(),
   last_transaction_date: z.string().nullable(),
   tier: z.string().nullable(),
-  is_favorite: z.boolean(),
   created_at: z.string(),
 });
 
@@ -248,7 +247,6 @@ const allUserLoyaltyResponseSchema = z.object({
   total_points_all_stores: z.number(),
   total_spent_all_stores: z.number(),
   loyalty_accounts: z.array(userLoyaltyResponseSchema),
-  favorite_stores: z.array(userLoyaltyResponseSchema),
 });
 
 // ===========================
@@ -337,6 +335,7 @@ appUser.openapi(getUserLoyaltyForStoreRoute, async (c) => {
         shop_id,
         points_balance,
         total_spent,
+        invoice_count,
         last_visit_at,
         is_active,
         created_at,
@@ -381,11 +380,10 @@ appUser.openapi(getUserLoyaltyForStoreRoute, async (c) => {
       total_points_earned: 0, // Will need to calculate from transactions
       total_points_redeemed: 0, // Will need to calculate from transactions
       total_spent: loyaltyAccount.total_spent,
-      visits_count: 0, // Field not available in current schema
+      invoice_count: loyaltyAccount.invoice_count || 0,
       last_visit_date: loyaltyAccount.last_visit_at,
       last_transaction_date: lastTransaction?.created_at || null,
       tier: null, // Not available in current schema
-      is_favorite: loyaltyAccount.is_active, // Use is_active as proxy
       created_at: loyaltyAccount.created_at,
     };
 
@@ -409,26 +407,24 @@ appUser.openapi(getUserLoyaltyForStoreRoute, async (c) => {
 const getUserLoyaltyAllStoresRoute = createRoute({
   method: "get",
   path: "/users/{userId}/loyalty",
-  summary: "⭐ Get user's loyalty points for all favorite stores",
+  summary: "⭐ Get user's loyalty points for all stores",
   description: `
-Get comprehensive loyalty information for a user across all their favorite stores.
+Get comprehensive loyalty information for a user across all their stores.
 
 **Features:**
 - All loyalty accounts for the user
 - Total points and spending across all stores
-- Favorite stores highlighted
 - Store-specific loyalty details
-- Supports filtering by favorite status
+- Pagination support
 
 **Example Usage:**
 \`\`\`bash
-curl -X GET 'https://your-api.com/api/app-user/users/user@example.com/loyalty?favorites_only=true'
+curl -X GET 'https://your-api.com/api/app-user/users/user@example.com/loyalty?limit=20'
 \`\`\`
 
 **Use Cases:**
 - Main loyalty dashboard in customer app
 - Overview of all loyalty programs joined
-- Quick access to favorite stores
   `,
   tags: ["Customer App"],
   request: {
@@ -436,7 +432,6 @@ curl -X GET 'https://your-api.com/api/app-user/users/user@example.com/loyalty?fa
       userId: z.string().min(1, "User ID is required"),
     }),
     query: z.object({
-      favorites_only: z.string().optional(),
       limit: z.string().optional(),
       offset: z.string().optional(),
     }),
@@ -473,7 +468,7 @@ curl -X GET 'https://your-api.com/api/app-user/users/user@example.com/loyalty?fa
 appUser.openapi(getUserLoyaltyAllStoresRoute, async (c) => {
   try {
     const { userId } = c.req.valid("param");
-    const { favorites_only, limit = "50", offset = "0" } = c.req.valid("query");
+    const { limit = "50", offset = "0" } = c.req.valid("query");
 
     const limitNum = parseInt(limit, 10) || 50;
     const offsetNum = parseInt(offset, 10) || 0;
@@ -497,6 +492,7 @@ appUser.openapi(getUserLoyaltyAllStoresRoute, async (c) => {
         shop_id,
         points_balance,
         total_spent,
+        invoice_count,
         last_visit_at,
         is_active,
         created_at,
@@ -509,13 +505,7 @@ appUser.openapi(getUserLoyaltyAllStoresRoute, async (c) => {
       `
       )
       .eq("app_user_id", appUser.id)
-      .eq("shops.status", "active")
-      .order("points_balance", { ascending: false });
-
-    // Apply filters
-    if (favorites_only === "true") {
-      query = query.eq("is_active", true); // Use is_active as proxy for favorites
-    }
+      .eq("shops.status", "active");
 
     // Apply pagination
     const { data: loyaltyAccounts, error: loyaltyError } = await query.range(
@@ -568,13 +558,23 @@ appUser.openapi(getUserLoyaltyAllStoresRoute, async (c) => {
         total_points_earned: 0, // Will need to calculate from transactions
         total_points_redeemed: 0, // Will need to calculate from transactions
         total_spent: account.total_spent,
-        visits_count: 0, // Field not available in current schema
+        invoice_count: account.invoice_count || 0,
         last_visit_date: account.last_visit_at,
         last_transaction_date: lastTransactionMap.get(account.shop_id) || null,
         tier: null, // Not available in current schema
-        is_favorite: account.is_active, // Use is_active as proxy for favorite
         created_at: account.created_at,
       };
+    });
+
+    // Sort by last_transaction_date descending (most recent visits first)
+    formattedAccounts.sort((a, b) => {
+      // Handle null values - shops with no transactions appear last
+      if (!a.last_transaction_date && !b.last_transaction_date) return 0;
+      if (!a.last_transaction_date) return 1;
+      if (!b.last_transaction_date) return -1;
+      
+      // Sort descending by date (most recent first)
+      return new Date(b.last_transaction_date).getTime() - new Date(a.last_transaction_date).getTime();
     });
 
     // Calculate totals
@@ -587,9 +587,6 @@ appUser.openapi(getUserLoyaltyAllStoresRoute, async (c) => {
       0
     );
 
-    // Filter favorite stores
-    const favoriteStores = formattedAccounts.filter((acc) => acc.is_favorite);
-
     const loyaltyData = {
       user_id: appUser.email, // Return email as user_id for API consistency
       email: appUser.email,
@@ -597,7 +594,6 @@ appUser.openapi(getUserLoyaltyAllStoresRoute, async (c) => {
       total_points_all_stores: totalPointsAllStores,
       total_spent_all_stores: totalSpentAllStores,
       loyalty_accounts: formattedAccounts,
-      favorite_stores: favoriteStores,
     };
 
     return c.json(

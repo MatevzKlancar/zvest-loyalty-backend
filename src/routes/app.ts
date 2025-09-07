@@ -386,6 +386,7 @@ app.openapi(scanQRRoute, async (c) => {
       .update({
         points_balance: loyaltyAccount.points_balance + pointsToAward,
         total_spent: loyaltyAccount.total_spent + transaction.total_amount,
+        invoice_count: (loyaltyAccount.invoice_count || 0) + 1,
         last_visit_at: new Date().toISOString(),
       })
       .eq("id", loyaltyAccount.id)

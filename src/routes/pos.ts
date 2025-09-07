@@ -1826,7 +1826,7 @@ pos.openapi(stornoTransactionRoute, async (c) => {
         // Get current loyalty account balance
         const { data: loyaltyAccount, error: accountError } = await supabase
           .from("customer_loyalty_accounts")
-          .select("points_balance, stamps_count, visits_count, total_spent")
+          .select("points_balance, stamps_count, total_spent, invoice_count")
           .eq("id", transaction.loyalty_account_id)
           .single();
 
@@ -1845,9 +1845,9 @@ pos.openapi(stornoTransactionRoute, async (c) => {
           0,
           (loyaltyAccount.stamps_count || 0) - stampsToReverse
         );
-        const newVisitsCount = Math.max(
+        const newInvoiceCount = Math.max(
           0,
-          (loyaltyAccount.visits_count || 0) - 1
+          (loyaltyAccount.invoice_count || 0) - 1
         );
         const newTotalSpent = Math.max(
           0,
@@ -1860,7 +1860,7 @@ pos.openapi(stornoTransactionRoute, async (c) => {
           .update({
             points_balance: newPointsBalance,
             stamps_count: newStampsCount,
-            visits_count: newVisitsCount,
+            ...(loyaltyAccount.hasOwnProperty('invoice_count') && { invoice_count: newInvoiceCount }),
             total_spent: newTotalSpent,
             updated_at: new Date().toISOString(),
           })
