@@ -429,6 +429,7 @@ const getTransactionRoute = createRoute({
 app.openapi(getTransactionRoute, async (c) => {
   try {
     const { transaction_id } = c.req.valid("param");
+    const appUser = c.get("appUser"); // Get authenticated customer
 
     const { data: transaction, error } = await supabase
       .from("transactions")
@@ -451,6 +452,7 @@ app.openapi(getTransactionRoute, async (c) => {
       `
       )
       .eq("id", transaction_id)
+      .eq("app_user_id", appUser.id)
       .single();
 
     if (error || !transaction) {
