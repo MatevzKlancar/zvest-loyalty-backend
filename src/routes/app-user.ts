@@ -39,10 +39,14 @@ const appUserProfileRoute = createRoute({
   path: "/profile",
   summary: "📱 Get B2C app user profile",
   description: `
-**B2C app user profile endpoint** returns user-specific profile information.
+**B2C app user profile endpoint** returns user profile information for display and editing.
 
-Returns loyalty points, transaction history, and user preferences.
+Returns basic user information, verification status, and preferences that can be displayed and edited in the profile section.
 **Authentication:** Currently public, but will require customer authentication in the future.
+
+For additional data:
+- Use GET /users/{userId}/loyalty for loyalty accounts and balances
+- Use GET /users/{userId}/transactions for transaction history
   `,
   tags: ["Customer App"],
   request: {
@@ -60,35 +64,21 @@ Returns loyalty points, transaction history, and user preferences.
             success: z.boolean(),
             message: z.string(),
             data: z.object({
-              user_type: z.string(),
+              id: z.string().uuid(),
               email: z.string(),
-              phone: z.string().optional(),
-              loyalty_accounts: z.array(
-                z.object({
-                  shop_id: z.string(),
-                  shop_name: z.string(),
-                  points_balance: z.number(),
-                  total_earned: z.number(),
-                  total_redeemed: z.number(),
-                  last_transaction_date: z.string().optional(),
-                })
-              ),
-              recent_transactions: z.array(
-                z.object({
-                  id: z.string(),
-                  shop_name: z.string(),
-                  amount: z.number(),
-                  points_earned: z.number(),
-                  points_redeemed: z.number(),
-                  transaction_date: z.string(),
-                  transaction_type: z.string(),
-                })
-              ),
-              user_preferences: z.object({
+              phone_number: z.string().nullable(),
+              first_name: z.string().nullable(),
+              last_name: z.string().nullable(),
+              date_of_birth: z.string().nullable(),
+              is_verified: z.boolean(),
+              preferences: z.object({
                 notifications_enabled: z.boolean(),
                 preferred_language: z.string(),
                 marketing_consent: z.boolean(),
+                newsletter_subscription: z.boolean(),
               }),
+              created_at: z.string(),
+              updated_at: z.string(),
             }),
           }),
         },
@@ -101,10 +91,21 @@ appUser.openapi(appUserProfileRoute, async (c) => {
   try {
     const { email, phone } = c.req.valid("query");
 
-    // Get app_user by email
+    // Get app_user by email with all profile fields
     const { data: appUser, error: userError } = await supabase
       .from("app_users")
-      .select("id, email, phone_number")
+      .select(`
+        id,
+        email,
+        phone_number,
+        first_name,
+        last_name,
+        date_of_birth,
+        is_verified,
+        preferences,
+        created_at,
+        updated_at
+      `)
       .eq("email", email)
       .single();
 
@@ -115,95 +116,25 @@ appUser.openapi(appUserProfileRoute, async (c) => {
       );
     }
 
-    // Get user's loyalty accounts using app_user_id
-    const { data: loyaltyAccounts, error: loyaltyError } = await supabase
-      .from("customer_loyalty_accounts")
-      .select(
-        `
-        shop_id,
-        points_balance,
-        total_points_earned,
-        total_points_redeemed,
-        shops!inner (
-          name
-        )
-      `
-      )
-      .eq("app_user_id", appUser.id)
-      .order("created_at", { ascending: false });
-
-    if (loyaltyError) {
-      logger.error("Error fetching loyalty accounts:", loyaltyError);
-      return c.json(
-        standardResponse(500, "Failed to fetch loyalty accounts"),
-        500
-      );
-    }
-
-    // Get recent transactions using app_user_id
-    const { data: transactions, error: transError } = await supabase
-      .from("transactions")
-      .select(
-        `
-        id,
-        total_amount,
-        loyalty_points_awarded,
-        loyalty_points_redeemed,
-        created_at,
-        transaction_type,
-        shops!inner (
-          name
-        )
-      `
-      )
-      .eq("app_user_id", appUser.id)
-      .order("created_at", { ascending: false })
-      .limit(10);
-
-    if (transError) {
-      logger.error("Error fetching transactions:", transError);
-      return c.json(standardResponse(500, "Failed to fetch transactions"), 500);
-    }
-
-    // Format loyalty accounts data
-    const formattedLoyaltyAccounts =
-      loyaltyAccounts?.map((account) => ({
-        shop_id: account.shop_id,
-        shop_name: account.shops[0]?.name || "Unknown Shop",
-        points_balance: account.points_balance,
-        total_earned: account.total_points_earned,
-        total_redeemed: account.total_points_redeemed,
-        last_transaction_date: transactions?.find(
-          (t) => t.shops[0]?.name === account.shops[0]?.name
-        )?.created_at,
-      })) || [];
-
-    // Format transactions data
-    const formattedTransactions =
-      transactions?.map((transaction) => ({
-        id: transaction.id,
-        shop_name: transaction.shops[0]?.name || "Unknown Shop",
-        amount: transaction.total_amount,
-        points_earned: transaction.loyalty_points_awarded,
-        points_redeemed: transaction.loyalty_points_redeemed,
-        transaction_date: transaction.created_at,
-        transaction_type: transaction.transaction_type || "purchase",
-      })) || [];
-
-    // Mock user preferences (in real app, this would come from a user_preferences table)
-    const userPreferences = {
+    // Default preferences if not set
+    const defaultPreferences = {
       notifications_enabled: true,
       preferred_language: "en",
       marketing_consent: true,
+      newsletter_subscription: false,
     };
 
     const profileData = {
-      user_type: "app_user",
+      id: appUser.id,
       email: appUser.email,
-      phone: appUser.phone_number || phone,
-      loyalty_accounts: formattedLoyaltyAccounts,
-      recent_transactions: formattedTransactions,
-      user_preferences: userPreferences,
+      phone_number: appUser.phone_number,
+      first_name: appUser.first_name,
+      last_name: appUser.last_name,
+      date_of_birth: appUser.date_of_birth,
+      is_verified: appUser.is_verified,
+      preferences: { ...defaultPreferences, ...appUser.preferences },
+      created_at: appUser.created_at,
+      updated_at: appUser.updated_at,
     };
 
     return c.json(
