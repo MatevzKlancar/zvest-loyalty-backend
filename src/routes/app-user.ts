@@ -673,12 +673,8 @@ appUser.openapi(getUserTransactionsRoute, async (c) => {
     const limitNum = parseInt(limit, 10) || 50;
     const offsetNum = parseInt(offset, 10) || 0;
 
-    // Get app_user by email first
-    const { data: appUser, error: userError } = await supabase
-      .from("app_users")
-      .select("id, email, phone_number")
-      .eq("email", userId)
-      .single();
+    // Get app_user by either email or UUID
+    const { data: appUser, error: userError } = await getAppUserByIdentifier(userId);
 
     if (userError || !appUser) {
       return c.json(
