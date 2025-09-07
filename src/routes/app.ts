@@ -23,8 +23,6 @@ app.use("*", requireCustomer);
 // Schemas
 const scanQRSchema = z.object({
   qr_code_data: z.string().min(1, "QR code data is required"),
-  phone_number: z.string().optional(), // For user identification
-  email: z.string().email().optional(), // Alternative identification
 });
 
 const transactionDetailsSchema = z.object({
@@ -83,15 +81,15 @@ QR codes follow the format \`PLT_{transaction_id}\` and are single-use only.
 **Example Usage:**
 \`\`\`bash
 curl -X POST https://zvest-loyalty-backend.onrender.com/api/app/scan-qr \\
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "qr_code_data": "PLT_456e7890-e89b-12d3-a456-426614174111",
-    "phone_number": "+1234567890"
+    "qr_code_data": "PLT_456e7890-e89b-12d3-a456-426614174111"
   }'
 \`\`\`
 
 **Important Notes:**
-- Either phone_number or email is required for user identification
+- User must be authenticated to scan QR codes
 - QR codes can only be scanned once
 - QR codes expire after 30 days
 - Points are awarded instantly upon successful scan
@@ -104,8 +102,6 @@ curl -X POST https://zvest-loyalty-backend.onrender.com/api/app/scan-qr \\
           schema: scanQRSchema.openapi({
             example: {
               qr_code_data: "PLT_456e7890-e89b-12d3-a456-426614174111",
-              phone_number: "+1234567890",
-              email: "customer@example.com",
             },
           }),
         },
@@ -203,15 +199,8 @@ curl -X POST https://zvest-loyalty-backend.onrender.com/api/app/scan-qr \\
 
 app.openapi(scanQRRoute, async (c) => {
   try {
-    const { qr_code_data, phone_number, email } = c.req.valid("json");
-
-    // Validate that we have either phone or email
-    if (!phone_number && !email) {
-      return c.json(
-        standardResponse(400, "Phone number or email is required"),
-        400
-      );
-    }
+    const { qr_code_data } = c.req.valid("json");
+    const appUser = c.get("appUser"); // Get authenticated customer
 
     // Parse QR code data (format: PLT_{transaction_id})
     if (!qr_code_data.startsWith("PLT_")) {
@@ -287,41 +276,7 @@ app.openapi(scanQRRoute, async (c) => {
       );
     }
 
-    // Get or create app user
-    let appUser;
-    const userQuery = supabase.from("app_users").select("*");
-
-    if (phone_number) {
-      userQuery.eq("phone_number", phone_number);
-    } else {
-      userQuery.eq("email", email);
-    }
-
-    const { data: existingUser } = await userQuery.single();
-
-    if (existingUser) {
-      appUser = existingUser;
-    } else {
-      // Create new app user
-      const { data: newUser, error: userError } = await supabase
-        .from("app_users")
-        .insert({
-          phone_number: phone_number || null,
-          email: email || null,
-          is_verified: false, // They can verify later
-        })
-        .select()
-        .single();
-
-      if (userError) {
-        logger.error("Failed to create app user:", userError);
-        return c.json(
-          standardResponse(500, "Failed to create user account"),
-          500
-        );
-      }
-      appUser = newUser;
-    }
+    // User is already authenticated via middleware
 
     // Get or create loyalty account
     let loyaltyAccount;
