@@ -51,13 +51,15 @@ export const authenticateUser = async (c: any, next: any) => {
     .select("id, role, first_name, last_name, is_active")
     .eq("supabase_user_id", user.id)
     .eq("is_active", true)
-    .single();
+    .maybeSingle();
 
-  console.log("🔍 AUTH DEBUG: Admin user lookup:", {
-    supabase_user_id: user.id,
-    adminUser,
-    adminError: adminError?.message,
-  });
+  // Only log admin errors that are not "no rows found"
+  if (adminError && adminError.code !== "PGRST116") {
+    console.log("🔍 AUTH DEBUG: Admin user lookup error:", {
+      supabase_user_id: user.id,
+      adminError: adminError?.message,
+    });
+  }
 
   if (adminUser) {
     // User is admin

@@ -13,6 +13,7 @@ export interface LocalizedErrorMessages {
   coupon_code_too_long: string;
   coupon_insufficient_points: string;
   coupon_not_active: string;
+  article_not_in_system: string;
 
   // Shop validation errors
   shop_not_found: string;
@@ -46,6 +47,7 @@ export const slovenianMessages: LocalizedErrorMessages = {
   coupon_code_too_long: "Koda za kupon je predolga.",
   coupon_insufficient_points: "Stranka nima dovolj točk za ta kupon.",
   coupon_not_active: "Kupon ni aktiven.",
+  article_not_in_system: "Artikel ni v sistemu. Prosimo, sinhronizirajte artikle.",
 
   // Shop validation errors
   shop_not_found: "Trgovina ni najdena.",
@@ -79,6 +81,7 @@ export const englishMessages: LocalizedErrorMessages = {
   coupon_insufficient_points:
     "Customer doesn't have enough points for this coupon.",
   coupon_not_active: "Coupon is not active.",
+  article_not_in_system: "Article not in system. Please sync articles.",
 
   shop_not_found: "Shop not found.",
   shop_not_active: "Shop is not active.",

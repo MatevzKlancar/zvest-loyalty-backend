@@ -419,42 +419,94 @@ pos.openapi(syncArticlesRoute, async (c) => {
       );
     }
 
-    // Delete existing articles for this shop
-    const { error: deleteError } = await supabase
+    // Get existing articles for this shop to preserve IDs
+    const { data: existingArticles, error: fetchError } = await supabase
       .from("articles")
-      .delete()
+      .select("id, pos_article_id, name")
       .eq("shop_id", shop_id);
 
-    if (deleteError) {
-      logger.error("Failed to delete existing articles:", deleteError);
+    if (fetchError) {
+      logger.error("Failed to fetch existing articles:", fetchError);
       return c.json(standardResponse(500, "Failed to sync articles"), 500);
     }
 
-    // Insert new articles and their pricing rules
-    if (articles.length > 0) {
-      const articleInserts = articles.map((article) => ({
-        shop_id,
-        pos_article_id: article.pos_article_id,
-        name: article.name,
-        base_price: article.base_price,
-        description: article.description || null,
-        category: article.category || null,
-        type: article.type || null,
-        tax_type: article.tax_type || null,
-        tax_rate: article.tax_rate || 0,
-      }));
+    const existingArticleMap = new Map(
+      existingArticles?.map(a => [a.pos_article_id, a]) || []
+    );
 
-      const { data: insertedArticles, error: insertError } = await supabase
+    // Prepare articles for upsert - preserve existing IDs where possible
+    let insertedArticles: any[] = [];
+    if (articles.length > 0) {
+      const articlesToUpsert = articles.map((article) => {
+        const existing = existingArticleMap.get(article.pos_article_id);
+        return {
+          id: existing?.id, // Preserve existing ID if found
+          shop_id,
+          pos_article_id: article.pos_article_id,
+          name: article.name,
+          base_price: article.base_price,
+          description: article.description || null,
+          category: article.category || null,
+          type: article.type || null,
+          tax_type: article.tax_type || null,
+          tax_rate: article.tax_rate || 0,
+          is_active: true, // Ensure synced articles are active
+        };
+      });
+
+      // Use upsert to update existing or insert new articles
+      const { data: upsertedArticles, error: upsertError } = await supabase
         .from("articles")
-        .insert(articleInserts)
+        .upsert(articlesToUpsert, {
+          onConflict: "id", // Use ID conflict resolution
+          ignoreDuplicates: false,
+        })
         .select("id, pos_article_id");
 
-      if (insertError) {
-        logger.error("Failed to insert new articles:", insertError);
+      if (upsertError) {
+        logger.error("Failed to upsert articles:", upsertError);
         return c.json(standardResponse(500, "Failed to sync articles"), 500);
       }
 
-      // Insert promotional prices for articles that have them
+      insertedArticles = upsertedArticles || [];
+
+      // Mark articles not in sync as inactive (preserve for coupon references)
+      const syncedPosArticleIds = articles.map(a => a.pos_article_id);
+      const articlesToDeactivate = existingArticles?.filter(
+        a => !syncedPosArticleIds.includes(a.pos_article_id)
+      ) || [];
+
+      if (articlesToDeactivate.length > 0) {
+        const { error: deactivateError } = await supabase
+          .from("articles")
+          .update({ is_active: false })
+          .in("id", articlesToDeactivate.map(a => a.id));
+
+        if (deactivateError) {
+          logger.warn("Failed to deactivate removed articles:", deactivateError);
+          // Don't fail the sync, just log the warning
+        } else {
+          logger.info(`Deactivated ${articlesToDeactivate.length} articles no longer in POS`);
+        }
+      }
+
+      // Clean up and sync promotional prices for updated articles
+      const articleIds = insertedArticles.map(a => a.id);
+
+      // Remove existing promotional prices for these articles
+      if (articleIds.length > 0) {
+        const { error: cleanupError } = await supabase
+          .from("article_pricing")
+          .delete()
+          .in("article_id", articleIds);
+
+        if (cleanupError) {
+          logger.warn("Failed to cleanup old promotional prices:", cleanupError);
+          // Don't fail the sync, just log the warning
+        }
+      }
+
+      // Insert new promotional prices for articles that have them
       const pricingRuleInserts: any[] = [];
       for (const article of articles) {
         if (
@@ -1484,9 +1536,21 @@ pos.openapi(validateCouponRoute, async (c) => {
 
     if (coupon.articles_data) {
       // Multi-article coupon from articles_data
-      const articlesData = Array.isArray(coupon.articles_data)
-        ? coupon.articles_data
-        : JSON.parse(coupon.articles_data);
+      let articlesData;
+      try {
+        articlesData = Array.isArray(coupon.articles_data)
+          ? coupon.articles_data
+          : JSON.parse(coupon.articles_data);
+      } catch (error) {
+        logger.error("Error parsing articles_data for coupon validation:", error);
+        return c.json(
+          standardResponse(
+            200,
+            "Coupon validation completed",
+            createLocalizedErrorForShop("article_not_in_system", shop.settings)
+          )
+        );
+      }
 
       // Get pos_article_id mappings for all internal article_ids
       const internalArticleIds = articlesData
@@ -1522,12 +1586,12 @@ pos.openapi(validateCouponRoute, async (c) => {
             logger.error(
               `Article mapping not found for article_id: ${article.article_id}`
             );
-            // This could happen if the article was deleted after coupon creation
+            // This could happen if articles were deleted/changed after coupon creation
             return c.json(
               standardResponse(
                 200,
                 "Coupon validation completed",
-                createLocalizedErrorForShop("coupon_not_active", shop.settings)
+                createLocalizedErrorForShop("article_not_in_system", shop.settings)
               )
             );
           }
