@@ -431,7 +431,7 @@ pos.openapi(syncArticlesRoute, async (c) => {
     }
 
     const existingArticleMap = new Map(
-      existingArticles?.map(a => [a.pos_article_id, a]) || []
+      existingArticles?.map((a) => [a.pos_article_id, a]) || []
     );
 
     // Prepare articles for upsert - preserve existing IDs where possible
@@ -458,40 +458,55 @@ pos.openapi(syncArticlesRoute, async (c) => {
       const { data: upsertedArticles, error: upsertError } = await supabase
         .from("articles")
         .upsert(articlesToUpsert, {
-          onConflict: "id", // Use ID conflict resolution
+          onConflict: "shop_id,pos_article_id", // Use the actual unique constraint
           ignoreDuplicates: false,
         })
         .select("id, pos_article_id");
 
       if (upsertError) {
-        logger.error("Failed to upsert articles:", upsertError);
+        logger.error("Failed to upsert articles:", {
+          error: upsertError,
+          shop_id,
+          article_count: articles.length,
+          pos_provider_id: posProvider.id,
+          sample_articles: articles.slice(0, 2), // Log first 2 articles for debugging
+        });
         return c.json(standardResponse(500, "Failed to sync articles"), 500);
       }
 
       insertedArticles = upsertedArticles || [];
 
       // Mark articles not in sync as inactive (preserve for coupon references)
-      const syncedPosArticleIds = articles.map(a => a.pos_article_id);
-      const articlesToDeactivate = existingArticles?.filter(
-        a => !syncedPosArticleIds.includes(a.pos_article_id)
-      ) || [];
+      const syncedPosArticleIds = articles.map((a) => a.pos_article_id);
+      const articlesToDeactivate =
+        existingArticles?.filter(
+          (a) => !syncedPosArticleIds.includes(a.pos_article_id)
+        ) || [];
 
       if (articlesToDeactivate.length > 0) {
         const { error: deactivateError } = await supabase
           .from("articles")
           .update({ is_active: false })
-          .in("id", articlesToDeactivate.map(a => a.id));
+          .in(
+            "id",
+            articlesToDeactivate.map((a) => a.id)
+          );
 
         if (deactivateError) {
-          logger.warn("Failed to deactivate removed articles:", deactivateError);
+          logger.warn(
+            "Failed to deactivate removed articles:",
+            deactivateError
+          );
           // Don't fail the sync, just log the warning
         } else {
-          logger.info(`Deactivated ${articlesToDeactivate.length} articles no longer in POS`);
+          logger.info(
+            `Deactivated ${articlesToDeactivate.length} articles no longer in POS`
+          );
         }
       }
 
       // Clean up and sync promotional prices for updated articles
-      const articleIds = insertedArticles.map(a => a.id);
+      const articleIds = insertedArticles.map((a) => a.id);
 
       // Remove existing promotional prices for these articles
       if (articleIds.length > 0) {
@@ -501,7 +516,10 @@ pos.openapi(syncArticlesRoute, async (c) => {
           .in("article_id", articleIds);
 
         if (cleanupError) {
-          logger.warn("Failed to cleanup old promotional prices:", cleanupError);
+          logger.warn(
+            "Failed to cleanup old promotional prices:",
+            cleanupError
+          );
           // Don't fail the sync, just log the warning
         }
       }
@@ -1034,57 +1052,63 @@ pos.openapi(getShopCouponsRoute, async (c) => {
     // Transform coupons with proper POS article ID mapping
     let transformedCoupons;
     try {
-      transformedCoupons = coupons?.map((coupon) => {
-        let mappedArticles = [];
+      transformedCoupons =
+        coupons?.map((coupon) => {
+          let mappedArticles = [];
 
-        if (coupon.articles_data) {
-          const articlesData = Array.isArray(coupon.articles_data)
-            ? coupon.articles_data
-            : JSON.parse(coupon.articles_data);
+          if (coupon.articles_data) {
+            const articlesData = Array.isArray(coupon.articles_data)
+              ? coupon.articles_data
+              : JSON.parse(coupon.articles_data);
 
-          mappedArticles = articlesData.map((article: any) => {
-            if (
-              article.article_id === null ||
-              article.article_id === undefined
-            ) {
-              // Global coupon - applies to entire invoice
-              return {
-                article_id: null,
-                article_name: null,
-                discount_value: article.discount_value,
-              };
-            } else {
-              // Map internal article_id to pos_article_id
-              const mapping = articleMappings[article.article_id];
-              if (mapping) {
+            mappedArticles = articlesData.map((article: any) => {
+              if (
+                article.article_id === null ||
+                article.article_id === undefined
+              ) {
+                // Global coupon - applies to entire invoice
                 return {
-                  article_id: mapping.pos_article_id, // Use POS article ID
-                  article_name: mapping.name,
+                  article_id: null,
+                  article_name: null,
                   discount_value: article.discount_value,
                 };
               } else {
-                // Article not found (might be deleted) - this is a critical error for POS
-                logger.error(
-                  `Critical error: Article mapping not found for article_id: ${article.article_id} in coupon ${coupon.id}. Cannot return internal UUID to POS system.`
-                );
-                // Return error immediately - don't risk sending internal UUIDs to POS
-                throw new Error(`Article mapping not found for coupon ${coupon.id}. This coupon references a deleted article.`);
+                // Map internal article_id to pos_article_id
+                const mapping = articleMappings[article.article_id];
+                if (mapping) {
+                  return {
+                    article_id: mapping.pos_article_id, // Use POS article ID
+                    article_name: mapping.name,
+                    discount_value: article.discount_value,
+                  };
+                } else {
+                  // Article not found (might be deleted) - this is a critical error for POS
+                  logger.error(
+                    `Critical error: Article mapping not found for article_id: ${article.article_id} in coupon ${coupon.id}. Cannot return internal UUID to POS system.`
+                  );
+                  // Return error immediately - don't risk sending internal UUIDs to POS
+                  throw new Error(
+                    `Article mapping not found for coupon ${coupon.id}. This coupon references a deleted article.`
+                  );
+                }
               }
-            }
-          });
-        }
+            });
+          }
 
-        return {
-          ...coupon,
-          articles: mappedArticles, // Use mapped articles with POS IDs
-          articles_data: undefined, // Remove from response
-        };
-      }) || [];
+          return {
+            ...coupon,
+            articles: mappedArticles, // Use mapped articles with POS IDs
+            articles_data: undefined, // Remove from response
+          };
+        }) || [];
     } catch (mappingError) {
       // Critical error: coupon references deleted articles
       logger.error("Failed to map article IDs for POS coupons:", mappingError);
       return c.json(
-        standardResponse(500, "Coupon contains invalid article references. Please contact support."),
+        standardResponse(
+          500,
+          "Coupon contains invalid article references. Please contact support."
+        ),
         500
       );
     }
@@ -1542,7 +1566,10 @@ pos.openapi(validateCouponRoute, async (c) => {
           ? coupon.articles_data
           : JSON.parse(coupon.articles_data);
       } catch (error) {
-        logger.error("Error parsing articles_data for coupon validation:", error);
+        logger.error(
+          "Error parsing articles_data for coupon validation:",
+          error
+        );
         return c.json(
           standardResponse(
             200,
@@ -1591,7 +1618,10 @@ pos.openapi(validateCouponRoute, async (c) => {
               standardResponse(
                 200,
                 "Coupon validation completed",
-                createLocalizedErrorForShop("article_not_in_system", shop.settings)
+                createLocalizedErrorForShop(
+                  "article_not_in_system",
+                  shop.settings
+                )
               )
             );
           }
@@ -1924,7 +1954,9 @@ pos.openapi(stornoTransactionRoute, async (c) => {
           .update({
             points_balance: newPointsBalance,
             stamps_count: newStampsCount,
-            ...(loyaltyAccount.hasOwnProperty('invoice_count') && { invoice_count: newInvoiceCount }),
+            ...(loyaltyAccount.hasOwnProperty("invoice_count") && {
+              invoice_count: newInvoiceCount,
+            }),
             total_spent: newTotalSpent,
             updated_at: new Date().toISOString(),
           })
