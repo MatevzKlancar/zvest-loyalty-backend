@@ -434,13 +434,11 @@ pos.openapi(syncArticlesRoute, async (c) => {
       existingArticles?.map((a) => [a.pos_article_id, a]) || []
     );
 
-    // Prepare articles for upsert - preserve existing IDs where possible
+    // Prepare articles for upsert - don't include id field, let unique constraint handle conflicts
     let insertedArticles: any[] = [];
     if (articles.length > 0) {
       const articlesToUpsert = articles.map((article) => {
-        const existing = existingArticleMap.get(article.pos_article_id);
         return {
-          id: existing?.id, // Preserve existing ID if found
           shop_id,
           pos_article_id: article.pos_article_id,
           name: article.name,
@@ -455,6 +453,7 @@ pos.openapi(syncArticlesRoute, async (c) => {
       });
 
       // Use upsert to update existing or insert new articles
+      // onConflict uses the unique constraint on (shop_id, pos_article_id)
       const { data: upsertedArticles, error: upsertError } = await supabase
         .from("articles")
         .upsert(articlesToUpsert, {
@@ -466,6 +465,10 @@ pos.openapi(syncArticlesRoute, async (c) => {
       if (upsertError) {
         logger.error("Failed to upsert articles:", {
           error: upsertError,
+          error_message: upsertError.message,
+          error_details: upsertError.details,
+          error_hint: upsertError.hint,
+          error_code: upsertError.code,
           shop_id,
           article_count: articles.length,
           pos_provider_id: posProvider.id,
