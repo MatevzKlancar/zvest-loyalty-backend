@@ -746,7 +746,7 @@ pos.openapi(createTransactionRoute, async (c) => {
     // Verify shop belongs to POS provider and is active, get settings for localization
     const { data: shop, error: shopError } = await supabase
       .from("shops")
-      .select("id, name, settings")
+      .select("id, name, settings, qr_display_text")
       .eq("id", transactionData.shop_id)
       .eq("pos_provider_id", posProvider.id)
       .eq("status", "active")
@@ -804,10 +804,13 @@ pos.openapi(createTransactionRoute, async (c) => {
     }
 
     // Add display text for receipt printing and valid flag
+    // Use custom text from shop column if available, otherwise use default
+    const displayText = shop.qr_display_text || "Skeniraj za ZVEST točke";
+
     const transactionWithDisplayText = {
       valid: true,
       ...transaction,
-      display_text: `Scan for loyalty points\nInvoice: ${transaction.pos_invoice_id}`,
+      display_text: displayText,
     };
 
     logger.info(`Transaction created successfully: ${transaction.id}`);

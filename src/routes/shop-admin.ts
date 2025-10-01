@@ -33,6 +33,7 @@ const updateShopSchema = z.object({
   opening_hours: z.string().optional(), // Simple string like "Mon-Fri: 9:00-18:00, Sat: 10:00-16:00, Sun: Closed"
   image_url: z.string().url().optional(),
   tag: z.string().optional(),
+  qr_display_text: z.string().max(200).optional(), // Custom text to display below QR code on receipt
 });
 
 const createCouponSchema = z.object({
@@ -177,8 +178,14 @@ const updateShopRoute = createRoute({
   method: "put",
   path: "/shop",
   summary: "Update shop details",
-  description:
-    "Update shop information including opening hours, loyalty type, and contact details",
+  description: `Update shop information including opening hours, loyalty type, and contact details.
+
+**Custom QR Code Text:**
+You can customize the text displayed below the QR code on receipts using the \`qr_display_text\` field.
+
+Example: \`"Skeniraj za nagrade!"\`
+
+If not set, defaults to: \`"Skeniraj za ZVEST točke"\``,
   tags: ["Shop Management"],
   security: [{ BearerAuth: [] }],
   request: {
