@@ -508,6 +508,30 @@ const activatedCouponResponseSchema = z.object({
   usage_instructions: z.string(),
 });
 
+const activeCouponItemSchema = z.object({
+  redemption_id: z.string().uuid(),
+  redemption_code: z.string(),
+  display_code: z.string(),
+  qr_code_data: z.string(),
+  coupon: z.object({
+    id: z.string().uuid(),
+    type: z.string(),
+    articles_data: z.array(z.any()),
+    name: z.string().nullable(),
+    description: z.string().nullable(),
+    expires_at: z.string().nullable(),
+  }),
+  shop: z.object({
+    id: z.string().uuid(),
+    name: z.string(),
+    type: z.string().nullable(),
+  }),
+  redeemed_at: z.string(),
+  expires_at: z.string(),
+  remaining_seconds: z.number(),
+  usage_instructions: z.string(),
+});
+
 // ===========================
 // POST /coupons/:couponId/activate - Activate a coupon
 // ===========================
@@ -838,6 +862,190 @@ app.openapi(activateCouponRoute, async (c) => {
     }
   } catch (error) {
     logger.error("Error activating coupon:", error);
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
+// ===========================
+// GET /coupons/active - Get active coupons
+// ===========================
+
+const getActiveCouponsRoute = createRoute({
+  method: "get",
+  path: "/coupons/active",
+  summary: "Get active coupons",
+  description: `
+Get all currently active (not yet redeemed) coupons for the authenticated user.
+
+**How it Works:**
+1. Customer activates a coupon and has 5 minutes to use it
+2. This endpoint returns all coupons still in "active" status within the 5-minute window
+3. Returns empty array if no active coupons
+4. Automatically filters out expired coupons (older than 5 minutes)
+
+**Response includes:**
+- Redemption code for POS validation
+- QR code data for scanning
+- Remaining seconds until expiration
+- Shop and coupon details
+- Usage instructions
+
+**Example Usage:**
+\`\`\`bash
+curl -X GET https://zvest-loyalty-backend.onrender.com/api/app/coupons/active \\
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"
+\`\`\`
+
+**Use Cases:**
+- Display active coupons in customer app
+- Show countdown timer to user
+- Allow user to reopen app and see active coupon
+- Handle app crashes/restarts gracefully
+  `,
+  tags: ["Customer App"],
+  security: [{ BearerAuth: [] }],
+  responses: {
+    200: {
+      description: "Active coupons retrieved successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.object({
+              active_coupons: z.array(activeCouponItemSchema),
+              count: z.number(),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+app.openapi(getActiveCouponsRoute, async (c) => {
+  try {
+    const appUser = c.get("appUser"); // Get authenticated customer
+    const now = new Date();
+
+    // Get all active redemptions for this user
+    const { data: redemptions, error: redemptionsError } = await supabase
+      .from("coupon_redemptions")
+      .select(
+        `
+        id,
+        redemption_code,
+        redeemed_at,
+        points_deducted,
+        coupons (
+          id,
+          shop_id,
+          type,
+          name,
+          description,
+          articles_data,
+          expires_at,
+          shops (
+            id,
+            name,
+            type
+          )
+        )
+      `
+      )
+      .eq("app_user_id", appUser.id)
+      .eq("status", "active");
+
+    if (redemptionsError) {
+      logger.error("Error fetching active coupons:", redemptionsError);
+      return c.json(
+        standardResponse(500, "Failed to fetch active coupons"),
+        500
+      );
+    }
+
+    // Filter coupons that are still within the 5-minute window
+    const activeCoupons = (redemptions || [])
+      .map((redemption) => {
+        const coupon = redemption.coupons as any;
+        const shop = coupon?.shops as any;
+
+        // Calculate expiry time (5 minutes from redeemed_at)
+        const redeemedTime = new Date(redemption.redeemed_at);
+        const expiryTime = new Date(redeemedTime.getTime() + 5 * 60 * 1000);
+        const remainingMs = expiryTime.getTime() - now.getTime();
+        const remainingSeconds = Math.max(0, Math.floor(remainingMs / 1000));
+
+        // Only include if still valid (not expired)
+        if (remainingSeconds > 0) {
+          const displayCode = formatRedemptionCodeForDisplay(
+            redemption.redemption_code
+          );
+
+          // Generate usage instructions based on coupon type
+          let usageInstructions =
+            "Present this QR code to the cashier when making your purchase.";
+          try {
+            const articlesData = coupon.articles_data as any[];
+            if (articlesData && articlesData.length > 0) {
+              const firstArticle = articlesData[0];
+              switch (coupon.type) {
+                case "percentage":
+                  if (firstArticle.discount_value === 100) {
+                    usageInstructions = `Show this QR code to get a free ${
+                      firstArticle.article_name || "item"
+                    }.`;
+                  } else {
+                    usageInstructions = `Show this QR code to get ${firstArticle.discount_value}% off your purchase.`;
+                  }
+                  break;
+                case "fixed":
+                  usageInstructions = `Show this QR code to get €${firstArticle.discount_value} off your purchase.`;
+                  break;
+              }
+            }
+          } catch (error) {
+            logger.warn("Error parsing articles_data for instructions:", error);
+          }
+
+          return {
+            redemption_id: redemption.id,
+            redemption_code: redemption.redemption_code,
+            display_code: displayCode,
+            qr_code_data: redemption.redemption_code,
+            coupon: {
+              id: coupon.id,
+              type: coupon.type,
+              articles_data: coupon.articles_data,
+              name: coupon.name,
+              description: coupon.description,
+              expires_at: coupon.expires_at,
+            },
+            shop: {
+              id: shop.id,
+              name: shop.name,
+              type: shop.type,
+            },
+            redeemed_at: redemption.redeemed_at,
+            expires_at: expiryTime.toISOString(),
+            remaining_seconds: remainingSeconds,
+            usage_instructions: `Show QR code or tell staff: "${displayCode}" - Valid for ${Math.ceil(
+              remainingSeconds / 60
+            )} minutes`,
+          };
+        }
+        return null;
+      })
+      .filter((coupon) => coupon !== null);
+
+    return c.json(
+      standardResponse(200, "Active coupons retrieved successfully", {
+        active_coupons: activeCoupons,
+        count: activeCoupons.length,
+      })
+    );
+  } catch (error) {
+    logger.error("Error getting active coupons:", error);
     return c.json(standardResponse(500, "Internal server error"), 500);
   }
 });
