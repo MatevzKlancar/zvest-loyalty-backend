@@ -743,11 +743,33 @@ appUser.openapi(getUserTransactionsRoute, async (c) => {
       return c.json(standardResponse(500, "Failed to fetch transactions"), 500);
     }
 
+    // Return empty result if no transactions found (not an error)
     if (!transactions || transactions.length === 0) {
-      return c.json(
-        standardResponse(404, "User not found or has no transactions"),
-        404
-      );
+      return c.json({
+        success: true,
+        message: "User transaction history retrieved successfully",
+        data: {
+          user_id: appUser.email,
+          email: appUser.email,
+          phone: appUser.phone_number,
+          total_transactions: 0,
+          total_spent: 0,
+          total_points_earned: 0,
+          total_points_redeemed: 0,
+          transactions: [],
+          stats: {
+            transactions_last_30_days: 0,
+            spent_last_30_days: 0,
+            points_earned_last_30_days: 0,
+            favorite_store: null,
+          },
+        },
+        meta: {
+          total: 0,
+          limit: limitNum,
+          offset: offsetNum,
+        },
+      });
     }
 
     // Format transactions data
