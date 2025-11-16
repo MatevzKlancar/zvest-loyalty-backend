@@ -8,6 +8,8 @@ export const updateShopSchema = z.object({
   phone: z.string().optional(),
   email: z.string().email().optional(),
   website: z.string().url().optional(),
+  shop_category: z.enum(["bar", "restaurant", "bakery", "wellness", "pastry", "cafe", "retail", "other"]).optional(),
+  brand_color: z.string().regex(/^#[0-9A-Fa-f]{6}$/, "Brand color must be a valid hex color (e.g., #FF5733)").optional(),
   loyalty_type: z
     .union([
       z.enum(["points", "coupons"]),
@@ -30,6 +32,8 @@ export const shopResponseSchema = z.object({
   email: z.string().nullable(),
   website: z.string().nullable(),
   type: z.string().nullable(),
+  shop_category: z.string().nullable(),
+  brand_color: z.string().nullable(),
   loyalty_type: z.string().nullable(),
   points_per_euro: z.number().nullable(),
   opening_hours: z.string().nullable(),

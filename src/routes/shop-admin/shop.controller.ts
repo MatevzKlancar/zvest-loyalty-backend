@@ -53,6 +53,8 @@ shopController.openapi(getShopRoute, async (c) => {
         email,
         website,
         type,
+        shop_category,
+        brand_color,
         loyalty_type,
         points_per_euro,
         opening_hours,

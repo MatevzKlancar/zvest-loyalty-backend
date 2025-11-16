@@ -21,6 +21,8 @@ const storeResponseSchema = z.object({
   opening_hours: z.string().nullable(),
   loyalty_type: z.string(),
   type: z.string().nullable(),
+  shop_category: z.string().nullable(),
+  brand_color: z.string().nullable(),
   status: z.string(),
   image_url: z.string().nullable(),
   tag: z.string().nullable(),
@@ -93,6 +95,7 @@ curl -X GET 'https://your-api.com/api/public/stores?type=coffee&limit=10'
   request: {
     query: z.object({
       type: z.string().optional(),
+      shop_category: z.enum(["bar", "restaurant", "bakery", "wellness", "pastry", "cafe", "retail", "other"]).optional(),
       city: z.string().optional(),
       loyalty_type: z.enum(["points", "coupons"]).optional(),
       limit: z.string().optional(),
@@ -124,6 +127,7 @@ publicRoutes.openapi(getStoresRoute, async (c) => {
   try {
     const {
       type,
+      shop_category,
       city,
       loyalty_type,
       limit = "20",
@@ -146,6 +150,8 @@ publicRoutes.openapi(getStoresRoute, async (c) => {
         opening_hours,
         loyalty_type,
         type,
+        shop_category,
+        brand_color,
         status,
         image_url,
         tag,
@@ -158,6 +164,10 @@ publicRoutes.openapi(getStoresRoute, async (c) => {
     // Apply filters
     if (type) {
       query = query.eq("type", type);
+    }
+
+    if (shop_category) {
+      query = query.eq("shop_category", shop_category);
     }
 
     if (loyalty_type) {
@@ -274,6 +284,8 @@ publicRoutes.openapi(getStoreByIdRoute, async (c) => {
         opening_hours,
         loyalty_type,
         type,
+        shop_category,
+        brand_color,
         status,
         image_url,
         tag,
@@ -474,6 +486,8 @@ const menuResponseSchema = z.object({
     name: z.string(),
     description: z.string().nullable(),
     type: z.string().nullable(),
+    shop_category: z.string().nullable(),
+    brand_color: z.string().nullable(),
   }),
   menu: z.record(z.array(menuItemSchema)),
   categories: z.array(z.string()),
@@ -549,7 +563,7 @@ publicRoutes.openapi(getStoreMenuRoute, async (c) => {
     // First verify the store exists and is active
     const { data: store, error: storeError } = await supabase
       .from("shops")
-      .select("id, name, description, type, status")
+      .select("id, name, description, type, shop_category, brand_color, status")
       .eq("id", id)
       .eq("status", "active")
       .single();
@@ -613,6 +627,8 @@ publicRoutes.openapi(getStoreMenuRoute, async (c) => {
         name: store.name,
         description: store.description,
         type: store.type,
+        shop_category: store.shop_category,
+        brand_color: store.brand_color,
       },
       menu: menuByCategory,
       categories: sortedCategories,

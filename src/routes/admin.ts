@@ -93,6 +93,7 @@ const simpleB2bOnboardingSchema = z.object({
     .enum(["basic", "premium", "enterprise"])
     .default("basic"),
   loyalty_type: z.enum(["points", "coupons"]).default("points"),
+  shop_category: z.enum(["bar", "restaurant", "bakery", "wellness", "pastry", "cafe", "retail", "other"]).optional(),
 });
 
 // ===========================
@@ -274,6 +275,7 @@ admin.openapi(simpleB2bOnboardingRoute, async (c) => {
         email: data.contact_email,
         phone: data.contact_phone,
         loyalty_type: data.loyalty_type,
+        shop_category: data.shop_category,
         points_per_euro: data.loyalty_type === "points" ? 100 : null, // 100 points per euro default
         status: "pending",
         settings: {

@@ -40,6 +40,8 @@ export interface Database {
           email: string | null;
           website: string | null;
           type: string | null;
+          shop_category: "bar" | "restaurant" | "bakery" | "wellness" | "pastry" | "cafe" | "retail" | "other" | null;
+          brand_color: string | null;
           loyalty_type: "points" | "coupons";
           points_per_euro: number | null;
           opening_hours: string | null;
@@ -73,6 +75,8 @@ export interface Database {
           email?: string | null;
           website?: string | null;
           type?: string | null;
+          shop_category?: "bar" | "restaurant" | "bakery" | "wellness" | "pastry" | "cafe" | "retail" | "other" | null;
+          brand_color?: string | null;
           loyalty_type?: "points" | "coupons";
           points_per_euro?: number | null;
           opening_hours?: string | null;
@@ -106,6 +110,8 @@ export interface Database {
           email?: string | null;
           website?: string | null;
           type?: string | null;
+          shop_category?: "bar" | "restaurant" | "bakery" | "wellness" | "pastry" | "cafe" | "retail" | "other" | null;
+          brand_color?: string | null;
           loyalty_type?: "points" | "coupons";
           points_per_euro?: number | null;
           opening_hours?: string | null;
