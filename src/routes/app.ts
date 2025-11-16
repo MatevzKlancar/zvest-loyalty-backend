@@ -1050,4 +1050,207 @@ app.openapi(getActiveCouponsRoute, async (c) => {
   }
 });
 
+// Register or update push notification token
+const registerPushTokenRoute = createRoute({
+  method: "post",
+  path: "/push-token",
+  summary: "Register push notification token",
+  description: `
+Register or update a push notification token for the authenticated user. This allows the user to receive push notifications from shops they interact with.
+
+**How it Works:**
+1. App obtains Expo push token from device
+2. App sends token to backend with device info
+3. Backend stores/updates token for user
+4. User can now receive push notifications
+
+**Example Usage:**
+\`\`\`bash
+curl -X POST https://zvest-loyalty-backend.onrender.com/api/app/push-token \\
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "expo_push_token": "ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]",
+    "device_info": {
+      "os": "ios",
+      "model": "iPhone 14",
+      "app_version": "1.0.0"
+    }
+  }'
+\`\`\`
+  `,
+  tags: ["Customer App"],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            expo_push_token: z
+              .string()
+              .min(1)
+              .describe("Expo push token from the device"),
+            device_info: z
+              .record(z.any())
+              .optional()
+              .describe("Optional device information"),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Push token registered successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.object({
+              id: z.string(),
+              is_active: z.boolean(),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+app.openapi(registerPushTokenRoute, async (c) => {
+  try {
+    const appUser = c.get("appUser");
+    const { expo_push_token, device_info } = c.req.valid("json");
+
+    // Validate expo push token format
+    const Expo = (await import("expo-server-sdk")).Expo;
+    if (!Expo.isExpoPushToken(expo_push_token)) {
+      return c.json(
+        standardResponse(400, "Invalid Expo push token format"),
+        400
+      );
+    }
+
+    // Check if token already exists for this user
+    const { data: existing } = await supabase
+      .from("push_tokens")
+      .select("id")
+      .eq("app_user_id", appUser.id)
+      .eq("expo_push_token", expo_push_token)
+      .single();
+
+    let result;
+
+    if (existing) {
+      // Update existing token
+      const { data: updated, error } = await supabase
+        .from("push_tokens")
+        .update({
+          device_info: device_info || {},
+          is_active: true,
+          last_used_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", existing.id)
+        .select("id, is_active")
+        .single();
+
+      if (error) {
+        logger.error("Error updating push token", { error });
+        return c.json(
+          standardResponse(500, "Failed to update push token"),
+          500
+        );
+      }
+
+      result = updated;
+    } else {
+      // Create new token
+      const { data: created, error } = await supabase
+        .from("push_tokens")
+        .insert({
+          app_user_id: appUser.id,
+          expo_push_token,
+          device_info: device_info || {},
+          is_active: true,
+          last_used_at: new Date().toISOString(),
+        })
+        .select("id, is_active")
+        .single();
+
+      if (error) {
+        logger.error("Error creating push token", { error });
+        return c.json(
+          standardResponse(500, "Failed to register push token"),
+          500
+        );
+      }
+
+      result = created;
+    }
+
+    return c.json(
+      standardResponse(200, "Push token registered successfully", result)
+    );
+  } catch (error) {
+    logger.error("Error registering push token:", error);
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
+// Unregister push notification token
+const unregisterPushTokenRoute = createRoute({
+  method: "delete",
+  path: "/push-token/:token",
+  summary: "Unregister push notification token",
+  description: "Deactivate a push notification token (e.g., when user logs out or uninstalls app)",
+  tags: ["Customer App"],
+  request: {
+    params: z.object({
+      token: z.string().describe("The Expo push token to deactivate"),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Push token deactivated successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+  },
+});
+
+app.openapi(unregisterPushTokenRoute, async (c) => {
+  try {
+    const appUser = c.get("appUser");
+    const { token } = c.req.valid("param");
+
+    const { error } = await supabase
+      .from("push_tokens")
+      .update({ is_active: false })
+      .eq("app_user_id", appUser.id)
+      .eq("expo_push_token", token);
+
+    if (error) {
+      logger.error("Error deactivating push token", { error });
+      return c.json(
+        standardResponse(500, "Failed to deactivate push token"),
+        500
+      );
+    }
+
+    return c.json(
+      standardResponse(200, "Push token deactivated successfully")
+    );
+  } catch (error) {
+    logger.error("Error unregistering push token:", error);
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
 export default app;
