@@ -203,7 +203,6 @@ CREATE TABLE public.shops (
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
   opening_hours character varying,
-  qr_display_text character varying(200),
   loyalty_type character varying DEFAULT 'points'::character varying CHECK (loyalty_type::text = ANY (ARRAY['points'::character varying, 'coupons'::character varying]::text[])),
   website character varying,
   social_media jsonb DEFAULT '{}'::jsonb,
@@ -211,6 +210,7 @@ CREATE TABLE public.shops (
   image_url character varying,
   tag character varying,
   points_per_euro integer DEFAULT 100 CHECK (points_per_euro >= 1),
+  qr_display_text character varying,
   CONSTRAINT shops_pkey PRIMARY KEY (id),
   CONSTRAINT shops_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES public.customers(id),
   CONSTRAINT shops_pos_provider_id_fkey FOREIGN KEY (pos_provider_id) REFERENCES public.pos_providers(id)

@@ -13,10 +13,16 @@ import crypto from "crypto";
 
 const admin = new OpenAPIHono<UnifiedAuthContext>();
 
-// Apply unified auth middleware to all admin routes EXCEPT login
+// Apply unified auth middleware to all admin routes EXCEPT public endpoints
 admin.use("*", async (c, next) => {
-  // Skip auth for login endpoint
-  if (c.req.path === "/api/admin/login") {
+  // Skip auth for public endpoints
+  const publicPaths = [
+    "/api/admin/login",
+    "/api/admin/complete-shop-setup",
+  ];
+
+  // Also skip auth for invitation token endpoints (dynamic path)
+  if (publicPaths.includes(c.req.path) || c.req.path.startsWith("/api/admin/invitation/")) {
     await next();
     return;
   }
@@ -26,8 +32,14 @@ admin.use("*", async (c, next) => {
 });
 
 admin.use("*", async (c, next) => {
-  // Skip admin requirement for login endpoint
-  if (c.req.path === "/api/admin/login") {
+  // Skip admin requirement for public endpoints
+  const publicPaths = [
+    "/api/admin/login",
+    "/api/admin/complete-shop-setup",
+  ];
+
+  // Also skip admin requirement for invitation token endpoints
+  if (publicPaths.includes(c.req.path) || c.req.path.startsWith("/api/admin/invitation/")) {
     await next();
     return;
   }
@@ -216,11 +228,15 @@ admin.openapi(simpleB2bOnboardingRoute, async (c) => {
       .single();
 
     if (posProviderError || !posProvider) {
+      // Generate API key for new POS provider
+      const apiKey = crypto.randomBytes(32).toString("hex");
+
       const { data: newPosProvider, error: createPosError } = await supabase
         .from("pos_providers")
         .insert({
           name: data.pos_provider_name,
           description: `Auto-created for ${data.business_name}`,
+          api_key: apiKey,
         })
         .select("id")
         .single();
