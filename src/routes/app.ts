@@ -1148,7 +1148,6 @@ app.openapi(registerPushTokenRoute, async (c) => {
         .update({
           device_info: device_info || {},
           is_active: true,
-          last_used_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
         .eq("id", existing.id)
@@ -1173,7 +1172,6 @@ app.openapi(registerPushTokenRoute, async (c) => {
           expo_push_token,
           device_info: device_info || {},
           is_active: true,
-          last_used_at: new Date().toISOString(),
         })
         .select("id, is_active")
         .single();
@@ -1203,7 +1201,8 @@ const unregisterPushTokenRoute = createRoute({
   method: "delete",
   path: "/push-token/:token",
   summary: "Unregister push notification token",
-  description: "Deactivate a push notification token (e.g., when user logs out or uninstalls app)",
+  description:
+    "Deactivate a push notification token (e.g., when user logs out or uninstalls app)",
   tags: ["Customer App"],
   request: {
     params: z.object({
@@ -1244,9 +1243,7 @@ app.openapi(unregisterPushTokenRoute, async (c) => {
       );
     }
 
-    return c.json(
-      standardResponse(200, "Push token deactivated successfully")
-    );
+    return c.json(standardResponse(200, "Push token deactivated successfully"));
   } catch (error) {
     logger.error("Error unregistering push token:", error);
     return c.json(standardResponse(500, "Internal server error"), 500);
