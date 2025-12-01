@@ -1,0 +1,266 @@
+# External QR Codes Feature Tests
+# Use with VS Code REST Client extension
+# Test the new external QR codes feature (e.g., ski tickets → free meals)
+
+@baseURL = http://localhost:3000
+@apiKey = your-pos-provider-api-key
+@shopAdminToken = your-shop-admin-jwt-token
+@shopId = your-shop-id
+@articleId = your-article-id
+
+##########################################################
+# SETUP: Configure Customer for External QR Codes
+# (Run in Supabase SQL Editor)
+##########################################################
+
+# IMPORTANT: External QR codes require customer type = 'external-qr-codes'
+# This is an exclusive feature - shops with this customer type can ONLY use
+# external QR codes, not regular coupon redemptions.
+
+# 1. First, run ALL migrations in order:
+#    - database/migrations/add_article_qr_codes.sql
+#    - database/migrations/add_feature_tags_system.sql
+#    - database/migrations/add_external_qr_customer_type.sql
+
+# 2. Set customer type to 'external-qr-codes' for the customer:
+# UPDATE customers
+# SET type = 'external-qr-codes'
+# WHERE id = 'your-customer-id';
+
+# 3. (Optional) Add feature tag to shop for UI visibility:
+# UPDATE shops
+# SET feature_tags = '["external-qr-codes"]'::jsonb
+# WHERE customer_id = 'your-customer-id';
+
+##########################################################
+# Shop Admin Endpoints (Requires JWT Auth)
+##########################################################
+
+### 1. Import QR Codes for an Article
+POST {{baseURL}}/api/shop-admin/articles/{{articleId}}/qr-codes/import
+Authorization: Bearer {{shopAdminToken}}
+Content-Type: application/json
+
+{
+  "qr_codes": [
+    "SKI-TICKET-001",
+    "SKI-TICKET-002",
+    "SKI-TICKET-003",
+    "SKI-TICKET-004",
+    "SKI-TICKET-005"
+  ]
+}
+
+### Expected Response:
+# {
+#   "success": true,
+#   "message": "Import completed: 5 codes imported",
+#   "data": {
+#     "success": true,
+#     "imported_count": 5,
+#     "duplicate_count": 0,
+#     "error_count": 0
+#   }
+# }
+
+### 2. Import QR Codes with Duplicates (to test duplicate handling)
+POST {{baseURL}}/api/shop-admin/articles/{{articleId}}/qr-codes/import
+Authorization: Bearer {{shopAdminToken}}
+Content-Type: application/json
+
+{
+  "qr_codes": [
+    "SKI-TICKET-001",
+    "SKI-TICKET-006",
+    "SKI-TICKET-007"
+  ]
+}
+
+### Expected Response:
+# {
+#   "success": true,
+#   "message": "Import completed: 2 codes imported, 1 duplicates skipped",
+#   "data": {
+#     "success": true,
+#     "imported_count": 2,
+#     "duplicate_count": 1,
+#     "error_count": 0,
+#     "duplicates": ["SKI-TICKET-001"]
+#   }
+# }
+
+### 3. List All QR Codes for an Article
+GET {{baseURL}}/api/shop-admin/articles/{{articleId}}/qr-codes?status=all&limit=50&offset=0
+Authorization: Bearer {{shopAdminToken}}
+
+### Expected Response:
+# {
+#   "success": true,
+#   "message": "QR codes retrieved successfully",
+#   "data": [
+#     {
+#       "id": "uuid",
+#       "shop_id": "uuid",
+#       "article_id": "uuid",
+#       "qr_code": "SKI-TICKET-001",
+#       "status": "active",
+#       "used_at": null,
+#       "created_at": "2025-11-29T..."
+#     },
+#     ...
+#   ],
+#   "meta": {
+#     "total": 7,
+#     "limit": 50,
+#     "offset": 0
+#   }
+# }
+
+### 4. List Only Active QR Codes
+GET {{baseURL}}/api/shop-admin/articles/{{articleId}}/qr-codes?status=active
+Authorization: Bearer {{shopAdminToken}}
+
+### 5. List Only Used QR Codes
+GET {{baseURL}}/api/shop-admin/articles/{{articleId}}/qr-codes?status=used
+Authorization: Bearer {{shopAdminToken}}
+
+### 6. Delete an Unused QR Code
+DELETE {{baseURL}}/api/shop-admin/qr-codes/{{qrCodeId}}
+Authorization: Bearer {{shopAdminToken}}
+
+### Expected Response:
+# {
+#   "success": true,
+#   "message": "QR code deleted successfully"
+# }
+
+##########################################################
+# POS Integration Endpoints (Requires API Key)
+# NOTE: Uses same endpoint as regular coupons - backend auto-detects type
+##########################################################
+
+### 7. Validate External QR Code (Success Case)
+# Uses same endpoint as coupon validation - redemption_id accepts any code
+POST {{baseURL}}/api/pos/coupons/validate
+x-api-key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "shop_id": "{{shopId}}",
+  "redemption_id": "SKI-TICKET-002"
+}
+
+### Expected Response (Valid):
+# {
+#   "success": true,
+#   "message": "QR code validation completed",
+#   "data": {
+#     "valid": true,
+#     "article": {
+#       "article_id": "2493",  // POS article ID
+#       "article_name": "Free Meal",
+#       "discount_value": 100  // Always 100% = free
+#     },
+#     "shop": {
+#       "id": "shop-uuid",
+#       "name": "Mountain Restaurant"
+#     }
+#   }
+# }
+
+### 8. Validate Same QR Code Again (Should Fail - Already Used)
+POST {{baseURL}}/api/pos/coupons/validate
+x-api-key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "shop_id": "{{shopId}}",
+  "redemption_id": "SKI-TICKET-002"
+}
+
+### Expected Response (Already Used):
+# {
+#   "success": true,
+#   "message": "QR code validation completed",
+#   "data": {
+#     "valid": false,
+#     "error_code": "qr_code_already_used",
+#     "error_message": "This QR code has already been used"
+#   }
+# }
+
+### 9. Validate Non-Existent QR Code
+POST {{baseURL}}/api/pos/coupons/validate
+x-api-key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "shop_id": "{{shopId}}",
+  "redemption_id": "INVALID-CODE-999"
+}
+
+### Expected Response (Not Found):
+# {
+#   "success": true,
+#   "message": "Coupon validation completed",
+#   "data": {
+#     "valid": false,
+#     "error_code": "coupon_not_found",
+#     "error_message": "Coupon not found..."
+#   }
+# }
+
+### 10. Validate Regular Coupon Code (6-digit) - Verify backward compatibility
+POST {{baseURL}}/api/pos/coupons/validate
+x-api-key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "shop_id": "{{shopId}}",
+  "redemption_id": "123456"
+}
+
+### Expected Response (Coupon Found):
+# Should work exactly as before - validates coupon redemption
+
+##########################################################
+# Testing Flow
+##########################################################
+
+# Complete Test Scenario:
+#
+# 1. Configure customer for external QR codes (SQL)
+#    ✓ Run migrations (see SETUP section above)
+#    ✓ Set customer type: UPDATE customers SET type = 'external-qr-codes' WHERE id = '...'
+#
+# 2. Import QR codes (Shop Admin)
+#    ✓ Run test #1 - Import 5 QR codes
+#    ✓ Expected: All 5 imported successfully
+#
+# 3. Verify import (Shop Admin)
+#    ✓ Run test #3 - List all QR codes
+#    ✓ Expected: See 5 codes with status "active"
+#
+# 4. Validate QR code at POS (Same endpoint as coupons!)
+#    ✓ Run test #7 - POST /api/pos/coupons/validate with redemption_id="SKI-TICKET-002"
+#    ✓ Expected: valid=true, article details returned, discount_value=100
+#    ✓ NOTE: Uses same endpoint, POS integration unchanged!
+#
+# 5. Verify one-time use
+#    ✓ Run test #8 - Try to validate same code again
+#    ✓ Expected: valid=false, error_code="coupon_already_used"
+#
+# 6. Check updated status (Shop Admin)
+#    ✓ Run test #3 - List all QR codes again
+#    ✓ Expected: SKI-TICKET-002 now has status="used" and used_at timestamp
+#
+# 7. Test duplicate prevention (Shop Admin)
+#    ✓ Run test #2 - Try to import duplicate codes
+#    ✓ Expected: Duplicates reported, only new codes imported
+#
+# 8. Test error cases
+#    ✓ Run test #9 - Invalid QR code
+#
+# 9. Test backward compatibility
+#    ✓ Run test #10 - Validate regular 6-digit coupon code
+#    ✓ Expected: Coupon validation still works (no breaking changes)

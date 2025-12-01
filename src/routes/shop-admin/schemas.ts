@@ -216,3 +216,35 @@ export const dashboardWidgetSchema = z.object({
     monthly_revenue_progress: z.number(),
   }),
 });
+
+// Article QR Code Schemas
+export const importQRCodesSchema = z.object({
+  qr_codes: z
+    .array(z.string().min(1, "QR code cannot be empty").max(255, "QR code too long"))
+    .min(1, "At least one QR code is required")
+    .max(10000, "Cannot import more than 10,000 QR codes at once"),
+});
+
+export const articleQRCodeResponseSchema = z.object({
+  id: z.string().uuid(),
+  shop_id: z.string().uuid(),
+  article_id: z.string().uuid(),
+  qr_code: z.string(),
+  status: z.enum(["active", "used"]),
+  used_at: z.string().nullable(),
+  created_at: z.string(),
+});
+
+export const importQRCodesResultSchema = z.object({
+  success: z.boolean(),
+  imported_count: z.number(),
+  duplicate_count: z.number(),
+  error_count: z.number(),
+  duplicates: z.array(z.string()).optional(),
+  errors: z.array(
+    z.object({
+      qr_code: z.string(),
+      error: z.string(),
+    })
+  ).optional(),
+});

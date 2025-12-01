@@ -1399,10 +1399,21 @@ pos.openapi(validateCouponRoute, async (c) => {
       );
     }
 
-    // Verify shop belongs to POS provider and get settings for localization
+    // Verify shop belongs to POS provider and get customer type for routing
     const { data: shop, error: shopError } = await supabase
       .from("shops")
-      .select("id, name, settings")
+      .select(
+        `
+        id,
+        name,
+        settings,
+        feature_tags,
+        customers (
+          id,
+          type
+        )
+      `
+      )
       .eq("id", shop_id)
       .eq("pos_provider_id", posProvider.id)
       .eq("status", "active")
@@ -1415,310 +1426,424 @@ pos.openapi(validateCouponRoute, async (c) => {
       );
     }
 
-    // Get coupon redemption with coupon details
-    const { data: redemption, error: redemptionError } = await supabase
-      .from("coupon_redemptions")
-      .select(
-        `
-        id,
-        coupon_id,
-        app_user_id,
-        points_deducted,
-        redeemed_at,
-        status,
-        coupons (
+    const customer = shop.customers as any;
+    const customerType = customer?.type || "platform"; // Default to platform for backward compatibility
+
+    // Route based on customer type
+    if (customerType === "external-qr-codes") {
+      // EXTERNAL QR CODE VALIDATION PATH (exclusive for external-qr-codes customers)
+      // Use original redemption_id (not normalized) for external QR codes
+      const { data: qrCodeRecord, error: qrCodeError } = await supabase
+        .from("article_qr_codes")
+        .select(
+          `
           id,
-          shop_id,
-          type,
-          name,
-          description,
-          articles_data,
-          expires_at
+          article_id,
+          status,
+          articles (
+            id,
+            pos_article_id,
+            name
+          )
+        `
         )
-      `
-      )
-      .eq("redemption_code", normalizedCode)
-      .eq("status", "active")
-      .single();
+        .eq("qr_code", redemption_id) // Use original code, not normalized
+        .eq("shop_id", shop_id)
+        .single();
 
-    if (redemptionError || !redemption) {
-      // Business logic error: code not found or already used - return 200 with error details
-      return c.json(
-        standardResponse(
-          200,
-          "Coupon validation completed",
-          createLocalizedErrorForShop("coupon_not_found", shop.settings)
-        )
-      );
-    }
-
-    const coupon = redemption.coupons as any;
-
-    // Verify coupon belongs to the shop
-    if (coupon.shop_id !== shop_id) {
-      // Business logic error: wrong shop - return 200 with error details
-      return c.json(
-        standardResponse(
-          200,
-          "Coupon validation completed",
-          createLocalizedErrorForShop("shop_not_found", shop.settings)
-        )
-      );
-    }
-
-    // Check if redemption has expired (5 minutes from redeemed_at)
-    const redeemedTime = new Date(redemption.redeemed_at);
-    const expiryTime = new Date(redeemedTime.getTime() + 5 * 60 * 1000); // 5 minutes
-    const now = new Date();
-
-    if (now > expiryTime) {
-      // Mark as expired
-      await supabase
-        .from("coupon_redemptions")
-        .update({ status: "expired" })
-        .eq("redemption_code", normalizedCode);
-
-      // Business logic error: redemption window expired - return 200 with error details
-      return c.json(
-        standardResponse(
-          200,
-          "Coupon validation completed",
-          createLocalizedErrorForShop("coupon_expired", shop.settings)
-        )
-      );
-    }
-
-    // Check coupon's own expiry
-    if (coupon.expires_at && new Date(coupon.expires_at) < now) {
-      // Business logic error: coupon expired - return 200 with error details
-      const expiredDate = new Date(coupon.expires_at).toLocaleDateString(
-        "en-US",
-        {
-          year: "numeric",
-          month: "long",
-          day: "numeric",
-        }
-      );
-      return c.json(
-        standardResponse(
-          200,
-          "Coupon validation completed",
-          createLocalizedErrorForShop("coupon_expired", shop.settings)
-        )
-      );
-    }
-
-    // Mark redemption as used
-    const { error: updateError } = await supabase
-      .from("coupon_redemptions")
-      .update({
-        status: "used",
-        // Note: articles_data contains the discount info, not a simple value field
-      })
-      .eq("redemption_code", normalizedCode);
-
-    if (updateError) {
-      logger.error("Failed to update coupon redemption status:", updateError);
-      return c.json(
-        standardResponse(500, "Failed to mark coupon as used"),
-        500
-      );
-    }
-
-    // Generate message based on coupon type and articles_data
-    let message = "Special offer applied";
-    let scopeMessage = "";
-
-    try {
-      if (coupon.articles_data) {
-        const articlesData = JSON.parse(coupon.articles_data);
-
-        if (coupon.type === "percentage") {
-          const percentage =
-            articlesData.percentage || articlesData.discount_percentage;
-          if (percentage === 100) {
-            message = `Free item (100% discount)`;
-          } else if (percentage) {
-            message = `Apply ${percentage}% discount`;
-          }
-        } else if (coupon.type === "fixed") {
-          const amount = articlesData.amount || articlesData.discount_amount;
-          if (amount) {
-            message = `Apply €${amount} discount`;
-          }
-        }
-
-        // Check scope based on articles_data structure
-        if (articlesData.articles && articlesData.articles.length > 0) {
-          scopeMessage = " (applies to specific items only)";
-        } else {
-          scopeMessage = " (applies to entire order)";
-        }
+      if (qrCodeError || !qrCodeRecord) {
+        // QR code not found
+        return c.json(
+          standardResponse(
+            200,
+            "Code validation completed",
+            createLocalizedErrorForShop("coupon_not_found", shop.settings)
+          )
+        );
       }
-    } catch (error) {
-      logger.error("Error parsing articles_data for coupon message:", error);
-      message = "Special offer applied";
-      scopeMessage = "";
-    }
 
-    // Always use articles array format for consistency
-    let articles: any[] = [];
+      // Check if already used
+      if (qrCodeRecord.status === "used") {
+        return c.json(
+          standardResponse(
+            200,
+            "Code validation completed",
+            createLocalizedErrorForShop("coupon_already_used", shop.settings)
+          )
+        );
+      }
 
-    if (coupon.articles_data) {
-      // Multi-article coupon from articles_data
-      let articlesData;
-      try {
-        articlesData = Array.isArray(coupon.articles_data)
-          ? coupon.articles_data
-          : JSON.parse(coupon.articles_data);
-      } catch (error) {
+      const article = qrCodeRecord.articles as any;
+
+      if (!article) {
         logger.error(
-          "Error parsing articles_data for coupon validation:",
-          error
+          `Article not found for QR code: ${redemption_id}, article_id: ${qrCodeRecord.article_id}`
         );
         return c.json(
           standardResponse(
             200,
-            "Coupon validation completed",
+            "Code validation completed",
             createLocalizedErrorForShop("article_not_in_system", shop.settings)
           )
         );
       }
 
-      // Get pos_article_id mappings for all internal article_ids
-      const internalArticleIds = articlesData
-        .map((article: any) => article.article_id)
-        .filter((id: any) => id !== null); // Filter out global coupons (null article_id)
+      // Mark QR code as used
+      const { error: updateError } = await supabase
+        .from("article_qr_codes")
+        .update({
+          status: "used",
+          used_at: new Date().toISOString(),
+        })
+        .eq("id", qrCodeRecord.id);
 
-      let articleMappings: any[] = [];
-      if (internalArticleIds.length > 0) {
-        const { data: mappings, error: mappingError } = await supabase
-          .from("articles")
-          .select("id, pos_article_id, name")
-          .eq("shop_id", shop_id)
-          .in("id", internalArticleIds);
-
-        if (mappingError) {
-          logger.error("Failed to get article mappings:", mappingError);
-          return c.json(
-            standardResponse(500, "Failed to process coupon validation"),
-            500
-          );
-        } else {
-          articleMappings = mappings || [];
-        }
+      if (updateError) {
+        logger.error("Failed to mark QR code as used:", updateError);
+        return c.json(
+          standardResponse(500, "Failed to mark code as used"),
+          500
+        );
       }
 
-      // Check if all required articles have mappings before processing
-      for (const article of articlesData) {
-        if (article.article_id !== null) {
-          const mapping = articleMappings.find(
-            (m) => m.id === article.article_id
+      // Return successful validation - same format as coupon validation
+      const validationData = {
+        valid: true,
+        redemption_id: qrCodeRecord.id, // Use QR code record id
+        coupon: {
+          id: qrCodeRecord.id,
+          name: `${article.name}`,
+          description: `${article.name}`,
+          type: "percentage",
+          articles: [
+            {
+              article_id: article.pos_article_id, // Return POS article ID
+              article_name: article.name,
+              discount_value: 100, // Always 100% discount (free)
+            },
+          ],
+        },
+        shop: {
+          id: shop.id,
+          name: shop.name,
+        },
+      };
+
+      logger.info(
+        `External QR code validated successfully: ${redemption_id} for article: ${article.name} in shop: ${shop_id}`
+      );
+      return c.json(
+        standardResponse(200, "Code validation completed", validationData)
+      );
+    } else {
+      // REGULAR COUPON REDEMPTION PATH (for 'platform' and 'enterprise' customers)
+      // Get coupon redemption with coupon details
+      const { data: redemption, error: redemptionError } = await supabase
+        .from("coupon_redemptions")
+        .select(
+          `
+          id,
+          coupon_id,
+          app_user_id,
+          points_deducted,
+          redeemed_at,
+          status,
+          coupons (
+            id,
+            shop_id,
+            type,
+            name,
+            description,
+            articles_data,
+            expires_at
+          )
+        `
+        )
+        .eq("redemption_code", normalizedCode)
+        .eq("status", "active")
+        .single();
+
+      if (redemptionError || !redemption) {
+        // Coupon redemption not found
+        return c.json(
+          standardResponse(
+            200,
+            "Coupon validation completed",
+            createLocalizedErrorForShop("coupon_not_found", shop.settings)
+          )
+        );
+      }
+
+      const coupon = redemption.coupons as any;
+
+      // Verify coupon belongs to the shop
+      if (coupon.shop_id !== shop_id) {
+        // Business logic error: wrong shop - return 200 with error details
+        return c.json(
+          standardResponse(
+            200,
+            "Coupon validation completed",
+            createLocalizedErrorForShop("shop_not_found", shop.settings)
+          )
+        );
+      }
+
+      // Check if redemption has expired (5 minutes from redeemed_at)
+      const redeemedTime = new Date(redemption.redeemed_at);
+      const expiryTime = new Date(redeemedTime.getTime() + 5 * 60 * 1000); // 5 minutes
+      const now = new Date();
+
+      if (now > expiryTime) {
+        // Mark as expired
+        await supabase
+          .from("coupon_redemptions")
+          .update({ status: "expired" })
+          .eq("redemption_code", normalizedCode);
+
+        // Business logic error: redemption window expired - return 200 with error details
+        return c.json(
+          standardResponse(
+            200,
+            "Coupon validation completed",
+            createLocalizedErrorForShop("coupon_expired", shop.settings)
+          )
+        );
+      }
+
+      // Check coupon's own expiry
+      if (coupon.expires_at && new Date(coupon.expires_at) < now) {
+        // Business logic error: coupon expired - return 200 with error details
+        const expiredDate = new Date(coupon.expires_at).toLocaleDateString(
+          "en-US",
+          {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          }
+        );
+        return c.json(
+          standardResponse(
+            200,
+            "Coupon validation completed",
+            createLocalizedErrorForShop("coupon_expired", shop.settings)
+          )
+        );
+      }
+
+      // Mark redemption as used
+      const { error: updateError } = await supabase
+        .from("coupon_redemptions")
+        .update({
+          status: "used",
+          // Note: articles_data contains the discount info, not a simple value field
+        })
+        .eq("redemption_code", normalizedCode);
+
+      if (updateError) {
+        logger.error("Failed to update coupon redemption status:", updateError);
+        return c.json(
+          standardResponse(500, "Failed to mark coupon as used"),
+          500
+        );
+      }
+
+      // Generate message based on coupon type and articles_data
+      let message = "Special offer applied";
+      let scopeMessage = "";
+
+      try {
+        if (coupon.articles_data) {
+          const articlesData = JSON.parse(coupon.articles_data);
+
+          if (coupon.type === "percentage") {
+            const percentage =
+              articlesData.percentage || articlesData.discount_percentage;
+            if (percentage === 100) {
+              message = `Free item (100% discount)`;
+            } else if (percentage) {
+              message = `Apply ${percentage}% discount`;
+            }
+          } else if (coupon.type === "fixed") {
+            const amount = articlesData.amount || articlesData.discount_amount;
+            if (amount) {
+              message = `Apply €${amount} discount`;
+            }
+          }
+
+          // Check scope based on articles_data structure
+          if (articlesData.articles && articlesData.articles.length > 0) {
+            scopeMessage = " (applies to specific items only)";
+          } else {
+            scopeMessage = " (applies to entire order)";
+          }
+        }
+      } catch (error) {
+        logger.error("Error parsing articles_data for coupon message:", error);
+        message = "Special offer applied";
+        scopeMessage = "";
+      }
+
+      // Always use articles array format for consistency
+      let articles: any[] = [];
+
+      if (coupon.articles_data) {
+        // Multi-article coupon from articles_data
+        let articlesData;
+        try {
+          articlesData = Array.isArray(coupon.articles_data)
+            ? coupon.articles_data
+            : JSON.parse(coupon.articles_data);
+        } catch (error) {
+          logger.error(
+            "Error parsing articles_data for coupon validation:",
+            error
           );
-          if (!mapping) {
-            logger.error(
-              `Article mapping not found for article_id: ${article.article_id}`
-            );
-            // This could happen if articles were deleted/changed after coupon creation
-            return c.json(
-              standardResponse(
-                200,
-                "Coupon validation completed",
-                createLocalizedErrorForShop(
-                  "article_not_in_system",
-                  shop.settings
-                )
+          return c.json(
+            standardResponse(
+              200,
+              "Coupon validation completed",
+              createLocalizedErrorForShop(
+                "article_not_in_system",
+                shop.settings
               )
+            )
+          );
+        }
+
+        // Get pos_article_id mappings for all internal article_ids
+        const internalArticleIds = articlesData
+          .map((article: any) => article.article_id)
+          .filter((id: any) => id !== null); // Filter out global coupons (null article_id)
+
+        let articleMappings: any[] = [];
+        if (internalArticleIds.length > 0) {
+          const { data: mappings, error: mappingError } = await supabase
+            .from("articles")
+            .select("id, pos_article_id, name")
+            .eq("shop_id", shop_id)
+            .in("id", internalArticleIds);
+
+          if (mappingError) {
+            logger.error("Failed to get article mappings:", mappingError);
+            return c.json(
+              standardResponse(500, "Failed to process coupon validation"),
+              500
             );
+          } else {
+            articleMappings = mappings || [];
+          }
+        }
+
+        // Check if all required articles have mappings before processing
+        for (const article of articlesData) {
+          if (article.article_id !== null) {
+            const mapping = articleMappings.find(
+              (m) => m.id === article.article_id
+            );
+            if (!mapping) {
+              logger.error(
+                `Article mapping not found for article_id: ${article.article_id}`
+              );
+              // This could happen if articles were deleted/changed after coupon creation
+              return c.json(
+                standardResponse(
+                  200,
+                  "Coupon validation completed",
+                  createLocalizedErrorForShop(
+                    "article_not_in_system",
+                    shop.settings
+                  )
+                )
+              );
+            }
+          }
+        }
+
+        articles = articlesData.map((article: any) => {
+          if (article.article_id === null) {
+            // Global coupon - applies to entire invoice
+            return {
+              article_id: null,
+              article_name: null,
+              discount_value: article.discount_value,
+            };
+          } else {
+            // Find the pos_article_id mapping (we know it exists from check above)
+            const mapping = articleMappings.find(
+              (m) => m.id === article.article_id
+            )!; // Non-null assertion since we validated above
+            return {
+              article_id: mapping.pos_article_id, // Use POS article ID
+              article_name: mapping.name,
+              discount_value: article.discount_value,
+            };
+          }
+        });
+      } else {
+        // Traditional single-article or global coupon - convert to articles array
+        if (coupon.article_id === null) {
+          // Global coupon
+          articles = [
+            {
+              article_id: null, // null = whole invoice
+              article_name: null,
+              discount_value: coupon.value,
+            },
+          ];
+        } else {
+          // Single article coupon - need to get pos_article_id
+          const { data: articleMapping, error: mappingError } = await supabase
+            .from("articles")
+            .select("pos_article_id, name")
+            .eq("shop_id", shop_id)
+            .eq("id", coupon.article_id)
+            .single();
+
+          if (mappingError) {
+            logger.error(
+              "Failed to get article mapping for traditional coupon:",
+              mappingError
+            );
+            return c.json(
+              standardResponse(500, "Failed to process coupon validation"),
+              500
+            );
+          } else {
+            articles = [
+              {
+                article_id: articleMapping.pos_article_id, // Use POS article ID
+                article_name: articleMapping.name,
+                discount_value: coupon.value,
+              },
+            ];
           }
         }
       }
 
-      articles = articlesData.map((article: any) => {
-        if (article.article_id === null) {
-          // Global coupon - applies to entire invoice
-          return {
-            article_id: null,
-            article_name: null,
-            discount_value: article.discount_value,
-          };
-        } else {
-          // Find the pos_article_id mapping (we know it exists from check above)
-          const mapping = articleMappings.find(
-            (m) => m.id === article.article_id
-          )!; // Non-null assertion since we validated above
-          return {
-            article_id: mapping.pos_article_id, // Use POS article ID
-            article_name: mapping.name,
-            discount_value: article.discount_value,
-          };
-        }
-      });
-    } else {
-      // Traditional single-article or global coupon - convert to articles array
-      if (coupon.article_id === null) {
-        // Global coupon
-        articles = [
-          {
-            article_id: null, // null = whole invoice
-            article_name: null,
-            discount_value: coupon.value,
-          },
-        ];
-      } else {
-        // Single article coupon - need to get pos_article_id
-        const { data: articleMapping, error: mappingError } = await supabase
-          .from("articles")
-          .select("pos_article_id, name")
-          .eq("shop_id", shop_id)
-          .eq("id", coupon.article_id)
-          .single();
+      const couponData = {
+        id: coupon.id,
+        name: coupon.name,
+        description: coupon.description,
+        type: coupon.type,
+        articles: articles,
+      };
 
-        if (mappingError) {
-          logger.error(
-            "Failed to get article mapping for traditional coupon:",
-            mappingError
-          );
-          return c.json(
-            standardResponse(500, "Failed to process coupon validation"),
-            500
-          );
-        } else {
-          articles = [
-            {
-              article_id: articleMapping.pos_article_id, // Use POS article ID
-              article_name: articleMapping.name,
-              discount_value: coupon.value,
-            },
-          ];
-        }
-      }
-    }
+      const validationData = {
+        valid: true,
+        redemption_id: redemption.id,
+        coupon: couponData,
+        shop: {
+          id: shop.id,
+          name: shop.name,
+        },
+      };
 
-    const couponData = {
-      id: coupon.id,
-      name: coupon.name,
-      description: coupon.description,
-      type: coupon.type,
-      articles: articles,
-    };
-
-    const validationData = {
-      valid: true,
-      redemption_id: redemption.id,
-      coupon: couponData,
-      shop: {
-        id: shop.id,
-        name: shop.name,
-      },
-    };
-
-    logger.info(
-      `Coupon redeemed successfully: ${redemption_id} for shop: ${shop_id}`
-    );
-    return c.json(
-      standardResponse(200, "Coupon validation completed", validationData)
-    );
+      logger.info(
+        `Coupon redeemed successfully: ${redemption_id} for shop: ${shop_id}`
+      );
+      return c.json(
+        standardResponse(200, "Coupon validation completed", validationData)
+      );
+    } // End of else block (regular coupon path)
   } catch (error) {
     logger.error("Error validating coupon:", error);
     return c.json(standardResponse(500, "Internal server error"), 500);
