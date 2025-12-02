@@ -62,6 +62,8 @@ export type Database = {
           phone_number: string | null
           preferences: Json | null
           push_token: string | null
+          reservation_blocked_until: string | null
+          reservation_no_show_count: number | null
           updated_at: string | null
           verification_code: string | null
           verification_expires_at: string | null
@@ -77,6 +79,8 @@ export type Database = {
           phone_number?: string | null
           preferences?: Json | null
           push_token?: string | null
+          reservation_blocked_until?: string | null
+          reservation_no_show_count?: number | null
           updated_at?: string | null
           verification_code?: string | null
           verification_expires_at?: string | null
@@ -92,6 +96,8 @@ export type Database = {
           phone_number?: string | null
           preferences?: Json | null
           push_token?: string | null
+          reservation_blocked_until?: string | null
+          reservation_no_show_count?: number | null
           updated_at?: string | null
           verification_code?: string | null
           verification_expires_at?: string | null
@@ -702,6 +708,413 @@ export type Database = {
           },
         ]
       }
+      reservation_availability: {
+        Row: {
+          created_at: string | null
+          day_of_week: number
+          end_time: string
+          id: string
+          is_active: boolean | null
+          resource_id: string | null
+          shop_id: string
+          start_time: string
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          day_of_week: number
+          end_time: string
+          id?: string
+          is_active?: boolean | null
+          resource_id?: string | null
+          shop_id: string
+          start_time: string
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          day_of_week?: number
+          end_time?: string
+          id?: string
+          is_active?: boolean | null
+          resource_id?: string | null
+          shop_id?: string
+          start_time?: string
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reservation_availability_resource_id_fkey"
+            columns: ["resource_id"]
+            isOneToOne: false
+            referencedRelation: "reservation_resources"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "reservation_availability_shop_id_fkey"
+            columns: ["shop_id"]
+            isOneToOne: false
+            referencedRelation: "shops"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      reservation_blocks: {
+        Row: {
+          block_type: string | null
+          created_at: string | null
+          end_datetime: string
+          id: string
+          reason: string | null
+          resource_id: string | null
+          shop_id: string
+          start_datetime: string
+        }
+        Insert: {
+          block_type?: string | null
+          created_at?: string | null
+          end_datetime: string
+          id?: string
+          reason?: string | null
+          resource_id?: string | null
+          shop_id: string
+          start_datetime: string
+        }
+        Update: {
+          block_type?: string | null
+          created_at?: string | null
+          end_datetime?: string
+          id?: string
+          reason?: string | null
+          resource_id?: string | null
+          shop_id?: string
+          start_datetime?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reservation_blocks_resource_id_fkey"
+            columns: ["resource_id"]
+            isOneToOne: false
+            referencedRelation: "reservation_resources"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "reservation_blocks_shop_id_fkey"
+            columns: ["shop_id"]
+            isOneToOne: false
+            referencedRelation: "shops"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      reservation_reminders: {
+        Row: {
+          created_at: string | null
+          error_message: string | null
+          id: string
+          reservation_id: string
+          scheduled_for: string
+          sent_at: string | null
+          status: string | null
+          type: string
+        }
+        Insert: {
+          created_at?: string | null
+          error_message?: string | null
+          id?: string
+          reservation_id: string
+          scheduled_for: string
+          sent_at?: string | null
+          status?: string | null
+          type: string
+        }
+        Update: {
+          created_at?: string | null
+          error_message?: string | null
+          id?: string
+          reservation_id?: string
+          scheduled_for?: string
+          sent_at?: string | null
+          status?: string | null
+          type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reservation_reminders_reservation_id_fkey"
+            columns: ["reservation_id"]
+            isOneToOne: false
+            referencedRelation: "reservations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      reservation_resource_services: {
+        Row: {
+          created_at: string | null
+          duration_override: number | null
+          id: string
+          is_active: boolean | null
+          price_override: number | null
+          resource_id: string
+          service_id: string
+        }
+        Insert: {
+          created_at?: string | null
+          duration_override?: number | null
+          id?: string
+          is_active?: boolean | null
+          price_override?: number | null
+          resource_id: string
+          service_id: string
+        }
+        Update: {
+          created_at?: string | null
+          duration_override?: number | null
+          id?: string
+          is_active?: boolean | null
+          price_override?: number | null
+          resource_id?: string
+          service_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reservation_resource_services_resource_id_fkey"
+            columns: ["resource_id"]
+            isOneToOne: false
+            referencedRelation: "reservation_resources"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "reservation_resource_services_service_id_fkey"
+            columns: ["service_id"]
+            isOneToOne: false
+            referencedRelation: "reservation_services"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      reservation_resources: {
+        Row: {
+          created_at: string | null
+          description: string | null
+          id: string
+          image_url: string | null
+          is_active: boolean | null
+          name: string
+          shop_id: string
+          sort_order: number | null
+          specialties: Json | null
+          type: string
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          description?: string | null
+          id?: string
+          image_url?: string | null
+          is_active?: boolean | null
+          name: string
+          shop_id: string
+          sort_order?: number | null
+          specialties?: Json | null
+          type: string
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          description?: string | null
+          id?: string
+          image_url?: string | null
+          is_active?: boolean | null
+          name?: string
+          shop_id?: string
+          sort_order?: number | null
+          specialties?: Json | null
+          type?: string
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reservation_resources_shop_id_fkey"
+            columns: ["shop_id"]
+            isOneToOne: false
+            referencedRelation: "shops"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      reservation_services: {
+        Row: {
+          capacity: number | null
+          created_at: string | null
+          description: string | null
+          duration_minutes: number | null
+          id: string
+          is_active: boolean | null
+          name: string
+          price: number | null
+          requires_resource: boolean | null
+          shop_id: string
+          sort_order: number | null
+          type: string
+          updated_at: string | null
+        }
+        Insert: {
+          capacity?: number | null
+          created_at?: string | null
+          description?: string | null
+          duration_minutes?: number | null
+          id?: string
+          is_active?: boolean | null
+          name: string
+          price?: number | null
+          requires_resource?: boolean | null
+          shop_id: string
+          sort_order?: number | null
+          type: string
+          updated_at?: string | null
+        }
+        Update: {
+          capacity?: number | null
+          created_at?: string | null
+          description?: string | null
+          duration_minutes?: number | null
+          id?: string
+          is_active?: boolean | null
+          name?: string
+          price?: number | null
+          requires_resource?: boolean | null
+          shop_id?: string
+          sort_order?: number | null
+          type?: string
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reservation_services_shop_id_fkey"
+            columns: ["shop_id"]
+            isOneToOne: false
+            referencedRelation: "shops"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      reservations: {
+        Row: {
+          app_user_id: string | null
+          cancellation_reason: string | null
+          cancelled_at: string | null
+          cancelled_by: string | null
+          confirmation_mode: string | null
+          confirmed_at: string | null
+          confirmed_by: string | null
+          created_at: string | null
+          customer_notes: string | null
+          end_time: string | null
+          guest_email: string | null
+          guest_name: string | null
+          guest_phone: string | null
+          id: string
+          internal_notes: string | null
+          metadata: Json | null
+          no_show_marked_at: string | null
+          no_show_marked_by: string | null
+          party_size: number | null
+          price: number | null
+          resource_id: string | null
+          service_id: string
+          shop_id: string
+          start_time: string
+          status: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          app_user_id?: string | null
+          cancellation_reason?: string | null
+          cancelled_at?: string | null
+          cancelled_by?: string | null
+          confirmation_mode?: string | null
+          confirmed_at?: string | null
+          confirmed_by?: string | null
+          created_at?: string | null
+          customer_notes?: string | null
+          end_time?: string | null
+          guest_email?: string | null
+          guest_name?: string | null
+          guest_phone?: string | null
+          id?: string
+          internal_notes?: string | null
+          metadata?: Json | null
+          no_show_marked_at?: string | null
+          no_show_marked_by?: string | null
+          party_size?: number | null
+          price?: number | null
+          resource_id?: string | null
+          service_id: string
+          shop_id: string
+          start_time: string
+          status?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          app_user_id?: string | null
+          cancellation_reason?: string | null
+          cancelled_at?: string | null
+          cancelled_by?: string | null
+          confirmation_mode?: string | null
+          confirmed_at?: string | null
+          confirmed_by?: string | null
+          created_at?: string | null
+          customer_notes?: string | null
+          end_time?: string | null
+          guest_email?: string | null
+          guest_name?: string | null
+          guest_phone?: string | null
+          id?: string
+          internal_notes?: string | null
+          metadata?: Json | null
+          no_show_marked_at?: string | null
+          no_show_marked_by?: string | null
+          party_size?: number | null
+          price?: number | null
+          resource_id?: string | null
+          service_id?: string
+          shop_id?: string
+          start_time?: string
+          status?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reservations_app_user_id_fkey"
+            columns: ["app_user_id"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "reservations_resource_id_fkey"
+            columns: ["resource_id"]
+            isOneToOne: false
+            referencedRelation: "reservation_resources"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "reservations_service_id_fkey"
+            columns: ["service_id"]
+            isOneToOne: false
+            referencedRelation: "reservation_services"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "reservations_shop_id_fkey"
+            columns: ["shop_id"]
+            isOneToOne: false
+            referencedRelation: "shops"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       shop_owner_invitations: {
         Row: {
           completed_at: string | null
@@ -795,6 +1208,8 @@ export type Database = {
           pos_sync_data: Json | null
           pos_synced_at: string | null
           qr_display_text: string | null
+          reservation_settings: Json | null
+          reservations_enabled: boolean | null
           settings: Json | null
           shop_category: string | null
           social_media: Json | null
@@ -827,6 +1242,8 @@ export type Database = {
           pos_sync_data?: Json | null
           pos_synced_at?: string | null
           qr_display_text?: string | null
+          reservation_settings?: Json | null
+          reservations_enabled?: boolean | null
           settings?: Json | null
           shop_category?: string | null
           social_media?: Json | null
@@ -859,6 +1276,8 @@ export type Database = {
           pos_sync_data?: Json | null
           pos_synced_at?: string | null
           qr_display_text?: string | null
+          reservation_settings?: Json | null
+          reservations_enabled?: boolean | null
           settings?: Json | null
           shop_category?: string | null
           social_media?: Json | null

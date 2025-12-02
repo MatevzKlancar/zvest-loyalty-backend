@@ -1131,21 +1131,21 @@ app.openapi(registerPushTokenRoute, async (c) => {
       );
     }
 
-    // Check if token already exists for this user
+    // Check if token already exists (for any user - token is unique per device)
     const { data: existing } = await supabase
       .from("push_tokens")
-      .select("id")
-      .eq("app_user_id", appUser.id)
+      .select("id, app_user_id")
       .eq("expo_push_token", expo_push_token)
-      .single();
+      .maybeSingle();
 
     let result;
 
     if (existing) {
-      // Update existing token
+      // Token exists - update it (reassign to current user if different)
       const { data: updated, error } = await supabase
         .from("push_tokens")
         .update({
+          app_user_id: appUser.id, // Reassign to current user
           device_info: device_info || {},
           is_active: true,
           updated_at: new Date().toISOString(),
