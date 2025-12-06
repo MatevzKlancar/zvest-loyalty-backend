@@ -1376,29 +1376,6 @@ pos.openapi(validateCouponRoute, async (c) => {
     const { shop_id, redemption_id } = c.req.valid("json");
     const posProvider = c.get("posProvider");
 
-    // Normalize redemption code (remove dashes if present) and validate
-    const normalizedCode = normalizeRedemptionCode(redemption_id);
-
-    // Check code format - handle different cases
-    if (!isValidRedemptionCodeFormat(normalizedCode)) {
-      // Business logic error: code format invalid (too short/long, not digits)
-      let errorCode: ErrorCode = "coupon_invalid_format";
-
-      if (normalizedCode.length < 6) {
-        errorCode = "coupon_code_too_short";
-      } else if (normalizedCode.length > 6) {
-        errorCode = "coupon_code_too_long";
-      }
-
-      return c.json(
-        standardResponse(
-          200,
-          "Coupon validation completed",
-          createLocalizedError(errorCode) // Use default locale since we don't have shop context yet
-        )
-      );
-    }
-
     // Verify shop belongs to POS provider and get customer type for routing
     const { data: shop, error: shopError } = await supabase
       .from("shops")
@@ -1407,7 +1384,6 @@ pos.openapi(validateCouponRoute, async (c) => {
         id,
         name,
         settings,
-        feature_tags,
         customers (
           id,
           type
@@ -1432,7 +1408,9 @@ pos.openapi(validateCouponRoute, async (c) => {
     // Route based on customer type
     if (customerType === "external-qr-codes") {
       // EXTERNAL QR CODE VALIDATION PATH (exclusive for external-qr-codes customers)
-      // Use original redemption_id (not normalized) for external QR codes
+      // Convert to uppercase for case-insensitive matching
+      const upperRedemptionId = redemption_id.toUpperCase();
+
       const { data: qrCodeRecord, error: qrCodeError } = await supabase
         .from("article_qr_codes")
         .select(
@@ -1447,7 +1425,7 @@ pos.openapi(validateCouponRoute, async (c) => {
           )
         `
         )
-        .eq("qr_code", redemption_id) // Use original code, not normalized
+        .eq("qr_code", upperRedemptionId) // Use uppercase for matching
         .eq("shop_id", shop_id)
         .single();
 
@@ -1536,6 +1514,29 @@ pos.openapi(validateCouponRoute, async (c) => {
       );
     } else {
       // REGULAR COUPON REDEMPTION PATH (for 'platform' and 'enterprise' customers)
+      // Normalize redemption code (remove dashes if present) and validate
+      const normalizedCode = normalizeRedemptionCode(redemption_id);
+
+      // Check code format - must be exactly 6 digits for regular coupons
+      if (!isValidRedemptionCodeFormat(normalizedCode)) {
+        // Business logic error: code format invalid (too short/long, not digits)
+        let errorCode: ErrorCode = "coupon_invalid_format";
+
+        if (normalizedCode.length < 6) {
+          errorCode = "coupon_code_too_short";
+        } else if (normalizedCode.length > 6) {
+          errorCode = "coupon_code_too_long";
+        }
+
+        return c.json(
+          standardResponse(
+            200,
+            "Coupon validation completed",
+            createLocalizedErrorForShop(errorCode, shop.settings)
+          )
+        );
+      }
+
       // Get coupon redemption with coupon details
       const { data: redemption, error: redemptionError } = await supabase
         .from("coupon_redemptions")

@@ -27,6 +27,8 @@ CREATE TABLE public.app_users (
   preferences jsonb DEFAULT '{}'::jsonb,
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
+  reservation_no_show_count integer DEFAULT 0 CHECK (reservation_no_show_count >= 0),
+  reservation_blocked_until timestamp with time zone,
   CONSTRAINT app_users_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.article_pricing (
@@ -46,6 +48,18 @@ CREATE TABLE public.article_pricing (
   updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT article_pricing_pkey PRIMARY KEY (id),
   CONSTRAINT article_pricing_article_id_fkey FOREIGN KEY (article_id) REFERENCES public.articles(id)
+);
+CREATE TABLE public.article_qr_codes (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  shop_id uuid NOT NULL,
+  article_id uuid NOT NULL,
+  qr_code character varying NOT NULL,
+  status character varying NOT NULL DEFAULT 'active'::character varying CHECK (status::text = ANY (ARRAY['active'::character varying, 'used'::character varying]::text[])),
+  used_at timestamp with time zone,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT article_qr_codes_pkey PRIMARY KEY (id),
+  CONSTRAINT article_qr_codes_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id),
+  CONSTRAINT article_qr_codes_article_id_fkey FOREIGN KEY (article_id) REFERENCES public.articles(id)
 );
 CREATE TABLE public.articles (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
@@ -116,7 +130,7 @@ CREATE TABLE public.customer_loyalty_accounts (
 CREATE TABLE public.customers (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
   name character varying NOT NULL,
-  type character varying NOT NULL CHECK (type::text = ANY (ARRAY['platform'::character varying, 'enterprise'::character varying]::text[])),
+  type character varying NOT NULL CHECK (type::text = ANY (ARRAY['platform'::character varying, 'enterprise'::character varying, 'external-qr-codes'::character varying]::text[])),
   subscription_tier character varying CHECK (subscription_tier::text = ANY (ARRAY['basic'::character varying, 'premium'::character varying, 'enterprise'::character varying]::text[])),
   database_config jsonb,
   settings jsonb DEFAULT '{}'::jsonb,
@@ -142,6 +156,20 @@ CREATE TABLE public.loyalty_programs (
   CONSTRAINT loyalty_programs_pkey PRIMARY KEY (id),
   CONSTRAINT loyalty_programs_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id)
 );
+CREATE TABLE public.notification_templates (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  shop_id uuid NOT NULL,
+  name character varying NOT NULL,
+  type character varying NOT NULL CHECK (type::text = ANY (ARRAY['birthday'::character varying, 'manual'::character varying, 'points_earned'::character varying, 'coupon_ready'::character varying]::text[])),
+  title character varying NOT NULL,
+  body text NOT NULL,
+  data jsonb DEFAULT '{}'::jsonb,
+  is_active boolean DEFAULT true,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT notification_templates_pkey PRIMARY KEY (id),
+  CONSTRAINT notification_templates_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id)
+);
 CREATE TABLE public.pos_providers (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
   name character varying NOT NULL,
@@ -153,15 +181,149 @@ CREATE TABLE public.pos_providers (
   updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT pos_providers_pkey PRIMARY KEY (id)
 );
+CREATE TABLE public.push_notifications (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  shop_id uuid,
+  app_user_id uuid,
+  notification_type character varying NOT NULL,
+  title character varying NOT NULL,
+  body text NOT NULL,
+  data jsonb DEFAULT '{}'::jsonb,
+  expo_ticket_id character varying,
+  status character varying DEFAULT 'pending'::character varying CHECK (status::text = ANY (ARRAY['pending'::character varying, 'sent'::character varying, 'delivered'::character varying, 'failed'::character varying, 'error'::character varying]::text[])),
+  error_message text,
+  sent_at timestamp with time zone,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT push_notifications_pkey PRIMARY KEY (id),
+  CONSTRAINT push_notifications_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id),
+  CONSTRAINT push_notifications_app_user_id_fkey FOREIGN KEY (app_user_id) REFERENCES public.app_users(id)
+);
 CREATE TABLE public.push_tokens (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  token text NOT NULL UNIQUE,
-  user_id text,
-  device_type text CHECK (device_type = ANY (ARRAY['ios'::text, 'android'::text])),
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  app_user_id uuid NOT NULL,
+  expo_push_token character varying NOT NULL UNIQUE,
+  device_info jsonb DEFAULT '{}'::jsonb,
   is_active boolean DEFAULT true,
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
-  CONSTRAINT push_tokens_pkey PRIMARY KEY (id)
+  CONSTRAINT push_tokens_pkey PRIMARY KEY (id),
+  CONSTRAINT push_tokens_app_user_id_fkey FOREIGN KEY (app_user_id) REFERENCES public.app_users(id)
+);
+CREATE TABLE public.reservation_availability (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  shop_id uuid NOT NULL,
+  resource_id uuid,
+  day_of_week integer NOT NULL CHECK (day_of_week >= 0 AND day_of_week <= 6),
+  start_time time without time zone NOT NULL,
+  end_time time without time zone NOT NULL,
+  is_active boolean DEFAULT true,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT reservation_availability_pkey PRIMARY KEY (id),
+  CONSTRAINT reservation_availability_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id),
+  CONSTRAINT reservation_availability_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.reservation_resources(id)
+);
+CREATE TABLE public.reservation_blocks (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  shop_id uuid NOT NULL,
+  resource_id uuid,
+  start_datetime timestamp with time zone NOT NULL,
+  end_datetime timestamp with time zone NOT NULL,
+  reason character varying,
+  block_type character varying DEFAULT 'custom'::character varying CHECK (block_type::text = ANY (ARRAY['holiday'::character varying, 'vacation'::character varying, 'break'::character varying, 'custom'::character varying]::text[])),
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT reservation_blocks_pkey PRIMARY KEY (id),
+  CONSTRAINT reservation_blocks_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id),
+  CONSTRAINT reservation_blocks_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.reservation_resources(id)
+);
+CREATE TABLE public.reservation_reminders (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  reservation_id uuid NOT NULL,
+  type character varying NOT NULL CHECK (type::text = ANY (ARRAY['push'::character varying, 'sms'::character varying, 'email'::character varying]::text[])),
+  scheduled_for timestamp with time zone NOT NULL,
+  sent_at timestamp with time zone,
+  status character varying DEFAULT 'pending'::character varying CHECK (status::text = ANY (ARRAY['pending'::character varying, 'sent'::character varying, 'failed'::character varying, 'cancelled'::character varying]::text[])),
+  error_message text,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT reservation_reminders_pkey PRIMARY KEY (id),
+  CONSTRAINT reservation_reminders_reservation_id_fkey FOREIGN KEY (reservation_id) REFERENCES public.reservations(id)
+);
+CREATE TABLE public.reservation_resource_services (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  resource_id uuid NOT NULL,
+  service_id uuid NOT NULL,
+  price_override numeric CHECK (price_override >= 0::numeric),
+  duration_override integer CHECK (duration_override > 0),
+  is_active boolean DEFAULT true,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT reservation_resource_services_pkey PRIMARY KEY (id),
+  CONSTRAINT reservation_resource_services_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.reservation_resources(id),
+  CONSTRAINT reservation_resource_services_service_id_fkey FOREIGN KEY (service_id) REFERENCES public.reservation_services(id)
+);
+CREATE TABLE public.reservation_resources (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  shop_id uuid NOT NULL,
+  name character varying NOT NULL,
+  type character varying NOT NULL CHECK (type::text = ANY (ARRAY['staff'::character varying, 'table'::character varying, 'room'::character varying, 'other'::character varying]::text[])),
+  image_url character varying,
+  description text,
+  specialties jsonb DEFAULT '[]'::jsonb,
+  is_active boolean DEFAULT true,
+  sort_order integer DEFAULT 0,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT reservation_resources_pkey PRIMARY KEY (id),
+  CONSTRAINT reservation_resources_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id)
+);
+CREATE TABLE public.reservation_services (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  shop_id uuid NOT NULL,
+  name character varying NOT NULL,
+  description text,
+  duration_minutes integer,
+  price numeric CHECK (price >= 0::numeric),
+  type character varying NOT NULL CHECK (type::text = ANY (ARRAY['service'::character varying, 'table'::character varying, 'slot'::character varying]::text[])),
+  capacity integer DEFAULT 1 CHECK (capacity >= 1),
+  requires_resource boolean DEFAULT true,
+  is_active boolean DEFAULT true,
+  sort_order integer DEFAULT 0,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT reservation_services_pkey PRIMARY KEY (id),
+  CONSTRAINT reservation_services_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id)
+);
+CREATE TABLE public.reservations (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  shop_id uuid NOT NULL,
+  service_id uuid NOT NULL,
+  resource_id uuid,
+  app_user_id uuid,
+  guest_name character varying,
+  guest_phone character varying,
+  guest_email character varying,
+  start_time timestamp with time zone NOT NULL,
+  end_time timestamp with time zone,
+  party_size integer DEFAULT 1 CHECK (party_size >= 1),
+  price numeric,
+  status character varying DEFAULT 'pending'::character varying CHECK (status::text = ANY (ARRAY['pending'::character varying, 'confirmed'::character varying, 'cancelled'::character varying, 'completed'::character varying, 'no_show'::character varying]::text[])),
+  confirmation_mode character varying CHECK (confirmation_mode::text = ANY (ARRAY['auto'::character varying, 'manual'::character varying]::text[])),
+  confirmed_at timestamp with time zone,
+  confirmed_by character varying,
+  cancelled_at timestamp with time zone,
+  cancelled_by character varying,
+  cancellation_reason text,
+  no_show_marked_at timestamp with time zone,
+  no_show_marked_by character varying,
+  customer_notes text,
+  internal_notes text,
+  metadata jsonb DEFAULT '{}'::jsonb,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT reservations_pkey PRIMARY KEY (id),
+  CONSTRAINT reservations_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id),
+  CONSTRAINT reservations_service_id_fkey FOREIGN KEY (service_id) REFERENCES public.reservation_services(id),
+  CONSTRAINT reservations_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.reservation_resources(id),
+  CONSTRAINT reservations_app_user_id_fkey FOREIGN KEY (app_user_id) REFERENCES public.app_users(id)
 );
 CREATE TABLE public.shop_owner_invitations (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
@@ -211,6 +373,11 @@ CREATE TABLE public.shops (
   tag character varying,
   points_per_euro integer DEFAULT 100 CHECK (points_per_euro >= 1),
   qr_display_text character varying,
+  shop_category character varying CHECK (shop_category::text = ANY (ARRAY['bar'::character varying, 'restaurant'::character varying, 'bakery'::character varying, 'wellness'::character varying, 'pastry'::character varying, 'cafe'::character varying, 'retail'::character varying, 'other'::character varying]::text[])),
+  brand_color character varying,
+  external_qr_codes_enabled boolean DEFAULT false,
+  reservations_enabled boolean DEFAULT false,
+  reservation_settings jsonb DEFAULT '{}'::jsonb,
   CONSTRAINT shops_pkey PRIMARY KEY (id),
   CONSTRAINT shops_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES public.customers(id),
   CONSTRAINT shops_pos_provider_id_fkey FOREIGN KEY (pos_provider_id) REFERENCES public.pos_providers(id)
@@ -247,7 +414,7 @@ CREATE TABLE public.transactions (
   updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT transactions_pkey PRIMARY KEY (id),
   CONSTRAINT transactions_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id),
-  CONSTRAINT transactions_app_user_id_fkey FOREIGN KEY (app_user_id) REFERENCES public.app_users(id),
   CONSTRAINT transactions_loyalty_account_id_fkey FOREIGN KEY (loyalty_account_id) REFERENCES public.customer_loyalty_accounts(id),
-  CONSTRAINT transactions_coupon_used_id_fkey FOREIGN KEY (coupon_used_id) REFERENCES public.coupons(id)
+  CONSTRAINT transactions_coupon_used_id_fkey FOREIGN KEY (coupon_used_id) REFERENCES public.coupons(id),
+  CONSTRAINT transactions_app_user_id_fkey FOREIGN KEY (app_user_id) REFERENCES public.app_users(id)
 );

@@ -42,6 +42,12 @@ export const shopResponseSchema = z.object({
   status: z.string(),
   created_at: z.string(),
   updated_at: z.string(),
+  customers: z.object({
+    id: z.string().uuid(),
+    name: z.string(),
+    type: z.enum(["platform", "enterprise", "external-qr-codes"]),
+    subscription_tier: z.string().nullable(),
+  }).nullable(),
 });
 
 export const uploadImageSchema = z.object({

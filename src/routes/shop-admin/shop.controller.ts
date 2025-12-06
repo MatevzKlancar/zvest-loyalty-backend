@@ -62,7 +62,13 @@ shopController.openapi(getShopRoute, async (c) => {
         tag,
         status,
         created_at,
-        updated_at
+        updated_at,
+        customers (
+          id,
+          name,
+          type,
+          subscription_tier
+        )
       `
       )
       .eq("id", shop.id)

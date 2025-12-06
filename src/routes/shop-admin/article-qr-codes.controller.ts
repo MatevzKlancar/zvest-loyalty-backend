@@ -56,22 +56,28 @@ articleQRCodesController.openapi(importQRCodesRoute, async (c) => {
     const { article_id } = c.req.valid("param");
     const { qr_codes } = c.req.valid("json");
 
+    // Convert all QR codes to uppercase for case-insensitive handling
+    const normalizedQRCodes = qr_codes.map((code) => code.toUpperCase());
+
     // Check if shop has the feature enabled
+    logger.info(`Checking feature for shop: ${shop.id}`);
     const { data: shopData, error: shopError } = await supabase
       .from("shops")
-      .select("feature_tags")
+      .select("external_qr_codes_enabled")
       .eq("id", shop.id)
       .single();
 
     if (shopError || !shopData) {
-      logger.error("Failed to fetch shop data:", shopError);
+      logger.error(`Failed to fetch shop data for shop ${shop.id}`);
+      logger.error(`Error:`, shopError);
+      logger.error(`Data:`, shopData);
       return c.json(
         standardResponse(500, "Failed to verify shop settings"),
         500
       );
     }
 
-    if (!hasFeature(shopData, FEATURE_TAGS.EXTERNAL_QR_CODES)) {
+    if (!shopData.external_qr_codes_enabled) {
       return c.json(
         standardResponse(
           403,
@@ -100,27 +106,33 @@ articleQRCodesController.openapi(importQRCodesRoute, async (c) => {
     }
 
     // Check for existing QR codes in the system (duplicates)
-    const { data: existingCodes, error: checkError } = await supabase
-      .from("article_qr_codes")
-      .select("qr_code")
-      .in("qr_code", qr_codes);
+    // Batch the check to avoid PostgreSQL IN clause limits
+    const batchSize = 500;
+    const existingQRSet = new Set<string>();
 
-    if (checkError) {
-      logger.error("Failed to check for duplicate QR codes:", checkError);
-      return c.json(
-        standardResponse(500, "Failed to validate QR codes"),
-        500
-      );
+    for (let i = 0; i < normalizedQRCodes.length; i += batchSize) {
+      const batch = normalizedQRCodes.slice(i, i + batchSize);
+      const { data: existingCodes, error: checkError } = await supabase
+        .from("article_qr_codes")
+        .select("qr_code")
+        .in("qr_code", batch);
+
+      if (checkError) {
+        logger.error("Failed to check for duplicate QR codes:", checkError);
+        return c.json(
+          standardResponse(500, "Failed to validate QR codes"),
+          500
+        );
+      }
+
+      // Add existing codes to the set
+      existingCodes?.forEach((c) => existingQRSet.add(c.qr_code));
     }
-
-    const existingQRSet = new Set(
-      existingCodes?.map((c) => c.qr_code) || []
-    );
     const duplicates: string[] = [];
     const toImport: string[] = [];
 
     // Separate duplicates from new codes
-    for (const code of qr_codes) {
+    for (const code of normalizedQRCodes) {
       if (existingQRSet.has(code)) {
         duplicates.push(code);
       } else {
@@ -131,44 +143,49 @@ articleQRCodesController.openapi(importQRCodesRoute, async (c) => {
     let imported_count = 0;
     const errors: Array<{ qr_code: string; error: string }> = [];
 
-    // Import new codes
+    // Import new codes in batches
     if (toImport.length > 0) {
-      const recordsToInsert = toImport.map((code) => ({
-        shop_id: shop.id,
-        article_id: article_id,
-        qr_code: code,
-        status: "active" as const,
-      }));
+      const insertBatchSize = 500;
 
-      const { data: insertedCodes, error: insertError } = await supabase
-        .from("article_qr_codes")
-        .insert(recordsToInsert)
-        .select();
+      for (let i = 0; i < toImport.length; i += insertBatchSize) {
+        const batch = toImport.slice(i, i + insertBatchSize);
+        const recordsToInsert = batch.map((code) => ({
+          shop_id: shop.id,
+          article_id: article_id,
+          qr_code: code,
+          status: "active" as const,
+        }));
 
-      if (insertError) {
-        logger.error("Failed to insert QR codes:", insertError);
-        // Try to insert one by one to identify problematic codes
-        for (const code of toImport) {
-          const { error: singleError } = await supabase
-            .from("article_qr_codes")
-            .insert({
-              shop_id: shop.id,
-              article_id: article_id,
-              qr_code: code,
-              status: "active" as const,
-            });
+        const { data: insertedCodes, error: insertError } = await supabase
+          .from("article_qr_codes")
+          .insert(recordsToInsert)
+          .select();
 
-          if (singleError) {
-            errors.push({
-              qr_code: code,
-              error: singleError.message,
-            });
-          } else {
-            imported_count++;
+        if (insertError) {
+          logger.error(`Failed to insert QR code batch ${i}-${i + batch.length}:`, insertError);
+          // Try to insert one by one to identify problematic codes in this batch
+          for (const code of batch) {
+            const { error: singleError } = await supabase
+              .from("article_qr_codes")
+              .insert({
+                shop_id: shop.id,
+                article_id: article_id,
+                qr_code: code,
+                status: "active" as const,
+              });
+
+            if (singleError) {
+              errors.push({
+                qr_code: code,
+                error: singleError.message,
+              });
+            } else {
+              imported_count++;
+            }
           }
+        } else {
+          imported_count += insertedCodes?.length || 0;
         }
-      } else {
-        imported_count = insertedCodes?.length || 0;
       }
     }
 
