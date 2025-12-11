@@ -15,6 +15,13 @@ import shopAdminRoutes from "./routes/shop-admin";
 import publicRoutes from "./routes/public";
 // DatabaseSeeder import removed
 
+// Import reservation module routes
+import {
+  shopAdminReservationRoutes,
+  publicReservationRoutes,
+  appUserReservationRoutes,
+} from "./modules/reservations";
+
 const app = new OpenAPIHono({
   defaultHook: (result, c) => {
     if (!result.success) {
@@ -233,6 +240,21 @@ x-api-key: your-pos-api-key
       description:
         "📱 Complete customer mobile app experience. Scan QR codes, manage loyalty points, view transactions, redeem coupons, and manage profile. Public access with email/phone identification.",
     },
+    {
+      name: "Shop Admin - Reservations",
+      description:
+        "📅 Reservation system management for shop owners. Create services, manage staff/resources, set availability schedules, handle bookings, and track no-shows. Requires shop owner authentication.",
+    },
+    {
+      name: "Public - Reservations",
+      description:
+        "🗓️ Public reservation endpoints. Browse available services, check time slots, and make guest reservations. No authentication required.",
+    },
+    {
+      name: "App User - Reservations",
+      description:
+        "📱 Reservation management for app users. View upcoming reservations, book appointments, and cancel bookings. Requires app user authentication.",
+    },
   ],
 });
 
@@ -307,6 +329,11 @@ app.route("/api/pos", posRoutes);
 // App routes - for customer mobile application
 app.route("/api/app", appRoutes);
 
+// Reservation module routes
+app.route("/api/shop-admin/reservations", shopAdminReservationRoutes);
+app.route("/api/public/reservations", publicReservationRoutes);
+app.route("/api/app-user/reservations", appUserReservationRoutes);
+
 // Profile endpoints now organized by user role:
 // - GET /api/admin/profile (admin permissions, role info, admin-specific data)
 // - GET /api/shop/profile (shop details, subscription info, shop-specific data)
@@ -333,6 +360,11 @@ app.get("/", (c) => {
       public: "/api/public - Public store APIs (no authentication required)",
       pos: "/api/pos - POS system integration (requires API key)",
       app: "/api/app - Customer mobile app endpoints (public)",
+      reservations: {
+        shop_admin: "/api/shop-admin/reservations - Manage reservation system",
+        public: "/api/public/reservations - Guest bookings & availability",
+        app_user: "/api/app-user/reservations - User reservation management",
+      },
     },
     modern_flow: {
       "1_admin_login": "Login admin via Supabase Auth",

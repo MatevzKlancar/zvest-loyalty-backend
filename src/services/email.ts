@@ -39,7 +39,7 @@ export async function sendWelcomeEmail(
       logger.info(
         `Email sending disabled. Would send welcome email to ${email}`
       );
-      logger.info(`Setup URL: ${templateData.setup_url}`);
+      logger.info(`Setup hahaURL: ${templateData.setup_url}`);
       return true;
     }
 
