@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+// Reserved slugs that cannot be used
+const RESERVED_SLUGS = ["admin", "api", "app", "new", "edit", "settings", "dashboard", "login", "signup", "public"];
+
 // Shop Management Schemas
 export const updateShopSchema = z.object({
   name: z.string().min(1).optional(),
@@ -21,6 +24,17 @@ export const updateShopSchema = z.object({
   image_url: z.string().url().optional(),
   tag: z.string().optional(),
   qr_display_text: z.string().max(200).optional(),
+  custom_slug: z
+    .union([
+      z.string()
+        .min(3, "Slug must be at least 3 characters")
+        .max(100, "Slug cannot exceed 100 characters")
+        .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Slug must be lowercase alphanumeric with hyphens only (e.g., 'my-cafe')")
+        .refine((val) => !RESERVED_SLUGS.includes(val), "This slug is reserved and cannot be used"),
+      z.literal("").transform(() => null),
+      z.null(),
+    ])
+    .optional(),
 });
 
 export const shopResponseSchema = z.object({
@@ -39,6 +53,8 @@ export const shopResponseSchema = z.object({
   opening_hours: z.string().nullable(),
   image_url: z.string().nullable(),
   tag: z.string().nullable(),
+  custom_slug: z.string().nullable(),
+  is_automated: z.boolean().nullable(),
   status: z.string(),
   created_at: z.string(),
   updated_at: z.string(),

@@ -10,6 +10,7 @@ import {
   UnifiedAuthContext,
 } from "../middleware/unified-auth";
 import crypto from "crypto";
+import { getGooglePlacesService, SUPPORTED_GOOGLE_TYPES, type MappedShopData } from "../services/google-places";
 
 const admin = new OpenAPIHono<UnifiedAuthContext>();
 
@@ -1182,7 +1183,751 @@ admin.openapi(createTestCustomerRoute, async (c) => {
 });
 
 // ===========================
-// 7. ADMIN PROFILE ENDPOINT
+// 7. IMPORT AUTOMATED SHOPS (Google Maps imports)
+// ===========================
+
+const importAutomatedShopSchema = z.object({
+  google_place_id: z.string().min(1, "Google Place ID is required"),
+  name: z.string().min(1, "Shop name is required"),
+  address: z.string().optional(),
+  opening_hours: z.string().optional(),
+  image_url: z.string().url().optional().nullable(),
+  description: z.string().optional(),
+  phone: z.string().optional(),
+  website: z.string().url().optional().nullable(),
+  shop_category: z.enum(["bar", "restaurant", "bakery", "wellness", "pastry", "cafe", "retail", "other"]).optional(),
+});
+
+const importAutomatedShopsRoute = createRoute({
+  method: "post",
+  path: "/shops/import-automated",
+  summary: "🗺️ Import automated shop from Google Maps",
+  description: `
+**Import a shop from Google Maps data.**
+
+Creates a placeholder shop that appears in the app listings but is marked as "automated"
+(not yet partnered with Zvest). These shops appear after real partners in listings.
+
+**Features:**
+- Prevents duplicate imports using Google Place ID
+- Sets status to "automated"
+- Menu and coupons are locked for automated shops
+- Can be converted to real partner later
+
+**Authentication:** Requires admin JWT token in Authorization header.
+  `,
+  tags: ["Admin"],
+  security: [{ BearerAuth: [] }],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: importAutomatedShopSchema.openapi({
+            example: {
+              google_place_id: "ChIJN1t_tDeuEmsRUsoyG83frY4",
+              name: "Cafe Central",
+              address: "123 Main Street, Ljubljana",
+              opening_hours: "Mon-Fri: 8:00-18:00",
+              image_url: "https://example.com/photo.jpg",
+              description: "Popular local cafe",
+              phone: "+386 1 234 5678",
+              shop_category: "cafe",
+            },
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: "Automated shop imported successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.object({
+              shop_id: z.string().uuid(),
+              name: z.string(),
+              status: z.string(),
+              is_automated: z.boolean(),
+            }),
+          }),
+        },
+      },
+    },
+    409: {
+      description: "Shop already exists",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean().default(false),
+            message: z.string(),
+            data: z.object({
+              existing_shop_id: z.string().uuid(),
+            }).optional(),
+          }),
+        },
+      },
+    },
+  },
+});
+
+admin.openapi(importAutomatedShopsRoute, async (c) => {
+  try {
+    const adminUser = c.get("adminUser");
+    const shopData = c.req.valid("json");
+
+    // Check if shop with this Google Place ID already exists
+    const { data: existingShop } = await supabase
+      .from("shops")
+      .select("id, name")
+      .eq("external_place_id", shopData.google_place_id)
+      .single();
+
+    if (existingShop) {
+      return c.json(
+        {
+          success: false,
+          message: `Shop "${existingShop.name}" already imported with this Google Place ID`,
+          data: {
+            existing_shop_id: existingShop.id,
+          },
+        },
+        409
+      );
+    }
+
+    // Get or create a default "Automated" POS provider for automated shops
+    let { data: posProvider } = await supabase
+      .from("pos_providers")
+      .select("id")
+      .eq("name", "Automated Import")
+      .single();
+
+    if (!posProvider) {
+      const apiKey = crypto.randomBytes(32).toString("hex");
+      const { data: newProvider } = await supabase
+        .from("pos_providers")
+        .insert({
+          name: "Automated Import",
+          description: "Placeholder provider for automated/imported shops",
+          api_key: apiKey,
+          is_active: false, // Not a real POS provider
+        })
+        .select("id")
+        .single();
+      posProvider = newProvider;
+    }
+
+    // Get or create a default "Automated" customer for automated shops
+    let { data: customer } = await supabase
+      .from("customers")
+      .select("id")
+      .eq("name", "Automated Imports")
+      .eq("type", "platform")
+      .single();
+
+    if (!customer) {
+      const { data: newCustomer } = await supabase
+        .from("customers")
+        .insert({
+          name: "Automated Imports",
+          type: "platform",
+          subscription_tier: "basic",
+          settings: {
+            is_automated_placeholder: true,
+          },
+        })
+        .select("id")
+        .single();
+      customer = newCustomer;
+    }
+
+    // Create the automated shop
+    const { data: shop, error: shopError } = await supabase
+      .from("shops")
+      .insert({
+        customer_id: customer!.id,
+        pos_provider_id: posProvider!.id,
+        name: shopData.name,
+        address: shopData.address,
+        phone: shopData.phone,
+        website: shopData.website,
+        opening_hours: shopData.opening_hours,
+        image_url: shopData.image_url,
+        description: shopData.description,
+        shop_category: shopData.shop_category,
+        status: "automated",
+        is_automated: true,
+        automated_source: "google_maps",
+        external_place_id: shopData.google_place_id,
+        settings: {
+          imported_by_admin: adminUser.id,
+          imported_at: new Date().toISOString(),
+        },
+      })
+      .select("id, name, status, is_automated")
+      .single();
+
+    if (shopError) {
+      logger.error("Failed to create automated shop:", shopError);
+      return c.json(
+        standardResponse(500, `Failed to import shop: ${shopError.message}`),
+        500
+      );
+    }
+
+    logger.info(`Automated shop imported: ${shop.name} (${shop.id}) by admin: ${adminUser.id}`);
+
+    return c.json(
+      standardResponse(201, "Automated shop imported successfully", {
+        shop_id: shop.id,
+        name: shop.name,
+        status: shop.status,
+        is_automated: shop.is_automated,
+      }),
+      201
+    );
+  } catch (error) {
+    logger.error("Error importing automated shop:", error);
+    return c.json(standardResponse(500, "Failed to import automated shop"), 500);
+  }
+});
+
+// ===========================
+// 8. GOOGLE PLACES - SEARCH
+// ===========================
+
+const googleSearchSchema = z.object({
+  query: z.string().min(1, "Search query is required"),
+  location: z.object({
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+    radiusMeters: z.number().min(100).max(50000).default(5000),
+  }).optional(),
+  type: z.enum(["cafe", "bar", "restaurant", "bakery", "spa", "beauty_salon", "hair_salon"]).optional(),
+  maxResults: z.number().min(1).max(20).default(20),
+});
+
+const googleSearchRoute = createRoute({
+  method: "post",
+  path: "/google/search",
+  summary: "🔍 Search Google Places",
+  description: `
+**Search for places on Google Maps to import.**
+
+Returns a list of places matching your query with all data needed for import.
+Use the \`external_place_id\` from results to import a specific place.
+
+**Location Presets:**
+- Ljubljana: \`{ latitude: 46.0569, longitude: 14.5058 }\`
+- Maribor: \`{ latitude: 46.5547, longitude: 15.6459 }\`
+- Celje: \`{ latitude: 46.2364, longitude: 15.2677 }\`
+
+**Authentication:** Requires admin JWT token.
+  `,
+  tags: ["Admin - Google Places"],
+  security: [{ BearerAuth: [] }],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: googleSearchSchema.openapi({
+            example: {
+              query: "kavarne Ljubljana",
+              location: {
+                latitude: 46.0569,
+                longitude: 14.5058,
+                radiusMeters: 5000,
+              },
+              type: "cafe",
+              maxResults: 20,
+            },
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Places found successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.object({
+              places: z.array(z.object({
+                external_place_id: z.string(),
+                name: z.string(),
+                address: z.string().nullable(),
+                phone: z.string().nullable(),
+                website: z.string().nullable(),
+                opening_hours: z.string().nullable(),
+                description: z.string().nullable(),
+                image_url: z.string().nullable(),
+                shop_category: z.string().nullable(),
+                rating: z.number().nullable(),
+                rating_count: z.number().nullable(),
+                price_level: z.number().nullable(),
+                google_maps_url: z.string().nullable(),
+              })),
+              count: z.number(),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+admin.openapi(googleSearchRoute, async (c) => {
+  try {
+    const searchData = c.req.valid("json");
+
+    const googlePlaces = getGooglePlacesService();
+
+    const places = await googlePlaces.searchAndMapPlaces({
+      query: searchData.query,
+      locationBias: searchData.location ? {
+        latitude: searchData.location.latitude,
+        longitude: searchData.location.longitude,
+        radiusMeters: searchData.location.radiusMeters,
+      } : undefined,
+      includedTypes: searchData.type ? [searchData.type] : undefined,
+      maxResults: searchData.maxResults,
+      languageCode: "sl",
+    });
+
+    logger.info(`Google search: "${searchData.query}" returned ${places.length} results`);
+
+    return c.json(
+      standardResponse(200, `Found ${places.length} places`, {
+        places,
+        count: places.length,
+      })
+    );
+  } catch (error) {
+    logger.error("Error searching Google Places:", error);
+    return c.json(
+      standardResponse(500, `Failed to search Google Places: ${error instanceof Error ? error.message : "Unknown error"}`),
+      500
+    );
+  }
+});
+
+// ===========================
+// 9. GOOGLE PLACES - IMPORT FROM SEARCH RESULT
+// ===========================
+
+const googleImportSchema = z.object({
+  place: z.object({
+    external_place_id: z.string().min(1),
+    name: z.string().min(1),
+    address: z.string().nullable(),
+    phone: z.string().nullable(),
+    website: z.string().nullable(),
+    opening_hours: z.string().nullable(),
+    description: z.string().nullable(),
+    image_url: z.string().nullable(),
+    shop_category: z.enum(["bar", "restaurant", "bakery", "wellness", "pastry", "cafe", "retail", "other"]).nullable(),
+    rating: z.number().nullable(),
+    rating_count: z.number().nullable(),
+    price_level: z.number().nullable(),
+    google_maps_url: z.string().nullable(),
+  }),
+});
+
+const googleImportRoute = createRoute({
+  method: "post",
+  path: "/google/import",
+  summary: "📥 Import place from Google search result",
+  description: `
+**Import a place from Google search results.**
+
+Takes a place object from the search results and creates an automated shop.
+This is the recommended way to import - search first, then import specific places.
+
+**Authentication:** Requires admin JWT token.
+  `,
+  tags: ["Admin - Google Places"],
+  security: [{ BearerAuth: [] }],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: googleImportSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: "Shop imported successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.object({
+              shop_id: z.string().uuid(),
+              name: z.string(),
+              status: z.string(),
+              is_automated: z.boolean(),
+            }),
+          }),
+        },
+      },
+    },
+    409: {
+      description: "Shop already exists",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+  },
+});
+
+admin.openapi(googleImportRoute, async (c) => {
+  try {
+    const adminUser = c.get("adminUser");
+    const { place } = c.req.valid("json");
+
+    // Check if shop with this Google Place ID already exists
+    const { data: existingShop } = await supabase
+      .from("shops")
+      .select("id, name")
+      .eq("external_place_id", place.external_place_id)
+      .single();
+
+    if (existingShop) {
+      return c.json(
+        standardResponse(409, `Shop "${existingShop.name}" already imported`),
+        409
+      );
+    }
+
+    // Get or create placeholder POS provider and customer
+    let { data: posProvider } = await supabase
+      .from("pos_providers")
+      .select("id")
+      .eq("name", "Automated Import")
+      .single();
+
+    if (!posProvider) {
+      const apiKey = crypto.randomBytes(32).toString("hex");
+      const { data: newProvider } = await supabase
+        .from("pos_providers")
+        .insert({
+          name: "Automated Import",
+          description: "Placeholder provider for automated/imported shops",
+          api_key: apiKey,
+          is_active: false,
+        })
+        .select("id")
+        .single();
+      posProvider = newProvider;
+    }
+
+    let { data: customer } = await supabase
+      .from("customers")
+      .select("id")
+      .eq("name", "Automated Imports")
+      .eq("type", "platform")
+      .single();
+
+    if (!customer) {
+      const { data: newCustomer } = await supabase
+        .from("customers")
+        .insert({
+          name: "Automated Imports",
+          type: "platform",
+          subscription_tier: "basic",
+          settings: { is_automated_placeholder: true },
+        })
+        .select("id")
+        .single();
+      customer = newCustomer;
+    }
+
+    // Create the automated shop with all Google data
+    const { data: shop, error: shopError } = await supabase
+      .from("shops")
+      .insert({
+        customer_id: customer!.id,
+        pos_provider_id: posProvider!.id,
+        name: place.name,
+        address: place.address,
+        phone: place.phone,
+        website: place.website,
+        opening_hours: place.opening_hours,
+        description: place.description,
+        image_url: place.image_url,
+        shop_category: place.shop_category,
+        rating: place.rating,
+        rating_count: place.rating_count,
+        price_level: place.price_level,
+        google_maps_url: place.google_maps_url,
+        external_place_id: place.external_place_id,
+        status: "automated",
+        is_automated: true,
+        automated_source: "google_maps",
+        settings: {
+          imported_by_admin: adminUser.id,
+          imported_at: new Date().toISOString(),
+        },
+      })
+      .select("id, name, status, is_automated")
+      .single();
+
+    if (shopError) {
+      logger.error("Failed to create shop from Google import:", shopError);
+      return c.json(
+        standardResponse(500, `Failed to import: ${shopError.message}`),
+        500
+      );
+    }
+
+    logger.info(`Google import: ${shop.name} (${shop.id}) by admin: ${adminUser.id}`);
+
+    return c.json(
+      standardResponse(201, `Imported "${shop.name}" successfully`, {
+        shop_id: shop.id,
+        name: shop.name,
+        status: shop.status,
+        is_automated: shop.is_automated,
+      }),
+      201
+    );
+  } catch (error) {
+    logger.error("Error importing from Google:", error);
+    return c.json(standardResponse(500, "Failed to import shop"), 500);
+  }
+});
+
+// ===========================
+// 10. GOOGLE PLACES - BULK IMPORT
+// ===========================
+
+const googleBulkImportSchema = z.object({
+  places: z.array(z.object({
+    external_place_id: z.string().min(1),
+    name: z.string().min(1),
+    address: z.string().nullable(),
+    phone: z.string().nullable(),
+    website: z.string().nullable(),
+    opening_hours: z.string().nullable(),
+    description: z.string().nullable(),
+    image_url: z.string().nullable(),
+    shop_category: z.enum(["bar", "restaurant", "bakery", "wellness", "pastry", "cafe", "retail", "other"]).nullable(),
+    rating: z.number().nullable(),
+    rating_count: z.number().nullable(),
+    price_level: z.number().nullable(),
+    google_maps_url: z.string().nullable(),
+  })).min(1).max(50),
+});
+
+const googleBulkImportRoute = createRoute({
+  method: "post",
+  path: "/google/bulk-import",
+  summary: "📦 Bulk import places from Google",
+  description: `
+**Import multiple places at once from Google search results.**
+
+Pass an array of places from the search results. Duplicates are automatically skipped.
+Maximum 50 places per request.
+
+**Authentication:** Requires admin JWT token.
+  `,
+  tags: ["Admin - Google Places"],
+  security: [{ BearerAuth: [] }],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: googleBulkImportSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Bulk import completed",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.object({
+              imported: z.number(),
+              skipped: z.number(),
+              failed: z.number(),
+              results: z.array(z.object({
+                name: z.string(),
+                status: z.enum(["imported", "skipped", "failed"]),
+                shop_id: z.string().uuid().optional(),
+                reason: z.string().optional(),
+              })),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+admin.openapi(googleBulkImportRoute, async (c) => {
+  try {
+    const adminUser = c.get("adminUser");
+    const { places } = c.req.valid("json");
+
+    // Get or create placeholder entities once
+    let { data: posProvider } = await supabase
+      .from("pos_providers")
+      .select("id")
+      .eq("name", "Automated Import")
+      .single();
+
+    if (!posProvider) {
+      const apiKey = crypto.randomBytes(32).toString("hex");
+      const { data: newProvider } = await supabase
+        .from("pos_providers")
+        .insert({
+          name: "Automated Import",
+          description: "Placeholder provider for automated/imported shops",
+          api_key: apiKey,
+          is_active: false,
+        })
+        .select("id")
+        .single();
+      posProvider = newProvider;
+    }
+
+    let { data: customer } = await supabase
+      .from("customers")
+      .select("id")
+      .eq("name", "Automated Imports")
+      .eq("type", "platform")
+      .single();
+
+    if (!customer) {
+      const { data: newCustomer } = await supabase
+        .from("customers")
+        .insert({
+          name: "Automated Imports",
+          type: "platform",
+          subscription_tier: "basic",
+          settings: { is_automated_placeholder: true },
+        })
+        .select("id")
+        .single();
+      customer = newCustomer;
+    }
+
+    // Get existing place IDs to check for duplicates
+    const placeIds = places.map(p => p.external_place_id);
+    const { data: existingShops } = await supabase
+      .from("shops")
+      .select("external_place_id, name")
+      .in("external_place_id", placeIds);
+
+    const existingPlaceIds = new Set(existingShops?.map(s => s.external_place_id) || []);
+
+    const results: Array<{
+      name: string;
+      status: "imported" | "skipped" | "failed";
+      shop_id?: string;
+      reason?: string;
+    }> = [];
+
+    let imported = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    for (const place of places) {
+      // Skip if already exists
+      if (existingPlaceIds.has(place.external_place_id)) {
+        results.push({
+          name: place.name,
+          status: "skipped",
+          reason: "Already imported",
+        });
+        skipped++;
+        continue;
+      }
+
+      try {
+        const { data: shop, error } = await supabase
+          .from("shops")
+          .insert({
+            customer_id: customer!.id,
+            pos_provider_id: posProvider!.id,
+            name: place.name,
+            address: place.address,
+            phone: place.phone,
+            website: place.website,
+            opening_hours: place.opening_hours,
+            description: place.description,
+            image_url: place.image_url,
+            shop_category: place.shop_category,
+            rating: place.rating,
+            rating_count: place.rating_count,
+            price_level: place.price_level,
+            google_maps_url: place.google_maps_url,
+            external_place_id: place.external_place_id,
+            status: "automated",
+            is_automated: true,
+            automated_source: "google_maps",
+            settings: {
+              imported_by_admin: adminUser.id,
+              imported_at: new Date().toISOString(),
+            },
+          })
+          .select("id")
+          .single();
+
+        if (error) throw error;
+
+        results.push({
+          name: place.name,
+          status: "imported",
+          shop_id: shop.id,
+        });
+        imported++;
+      } catch (error) {
+        results.push({
+          name: place.name,
+          status: "failed",
+          reason: error instanceof Error ? error.message : "Unknown error",
+        });
+        failed++;
+      }
+    }
+
+    logger.info(`Bulk import: ${imported} imported, ${skipped} skipped, ${failed} failed by admin: ${adminUser.id}`);
+
+    return c.json(
+      standardResponse(200, `Imported ${imported} shops (${skipped} skipped, ${failed} failed)`, {
+        imported,
+        skipped,
+        failed,
+        results,
+      })
+    );
+  } catch (error) {
+    logger.error("Error in bulk import:", error);
+    return c.json(standardResponse(500, "Bulk import failed"), 500);
+  }
+});
+
+// ===========================
+// 11. ADMIN PROFILE ENDPOINT
 // ===========================
 
 const adminProfileRoute = createRoute({

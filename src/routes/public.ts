@@ -19,19 +19,27 @@ const storeResponseSchema = z.object({
   phone: z.string().nullable(),
   website: z.string().nullable(),
   opening_hours: z.string().nullable(),
-  loyalty_type: z.string(),
+  loyalty_type: z.string().nullable(),
   type: z.string().nullable(),
   shop_category: z.string().nullable(),
   brand_color: z.string().nullable(),
   status: z.string(),
   image_url: z.string().nullable(),
   tag: z.string().nullable(),
+  custom_slug: z.string().nullable(),
+  is_automated: z.boolean().nullable(),
+  rating: z.number().nullable(),
+  rating_count: z.number().nullable(),
+  price_level: z.number().nullable(),
+  google_maps_url: z.string().nullable(),
   created_at: z.string(),
 });
 
 const storeDetailsResponseSchema = storeResponseSchema.extend({
   email: z.string().nullable(),
   social_media: z.record(z.any()).nullable(),
+  automated_source: z.string().nullable(),
+  external_place_id: z.string().nullable(),
   loyalty_programs: z
     .array(
       z.object({
@@ -76,30 +84,48 @@ const getStoresRoute = createRoute({
 Get all active public stores available for customers to browse and join loyalty programs.
 
 **Features:**
-- Returns only active stores
-- Supports filtering by store type and location
-- Includes basic store information and loyalty program details
-- Pagination support for large store lists
+- Returns 20 stores per page (configurable)
+- Search by name or city
+- Filter by category, type, loyalty program
+- Supports infinite scroll pagination
+- Real partners appear first, then automated (Google) shops
+
+**Pagination:**
+- Use \`offset\` to load more results (infinite scroll)
+- Response includes \`meta.total\` for total count
+- Response includes \`meta.hasMore\` to know if more results exist
 
 **Example Usage:**
 \`\`\`bash
-curl -X GET 'https://your-api.com/api/public/stores?type=coffee&limit=10'
+# First page
+curl -X GET 'https://your-api.com/api/public/stores'
+
+# Search by name
+curl -X GET 'https://your-api.com/api/public/stores?search=kavarna'
+
+# Search by city
+curl -X GET 'https://your-api.com/api/public/stores?city=Ljubljana'
+
+# Filter by category + pagination
+curl -X GET 'https://your-api.com/api/public/stores?shop_category=cafe&offset=20'
 \`\`\`
 
 **Use Cases:**
-- Customer app store directory
-- Store locator functionality
+- Customer app store directory with infinite scroll
+- Store search functionality
 - Browse available loyalty programs
   `,
   tags: ["Public"],
   request: {
     query: z.object({
+      search: z.string().optional().openapi({ description: "Search by store name OR city/address (case-insensitive)" }),
       type: z.string().optional(),
       shop_category: z.enum(["bar", "restaurant", "bakery", "wellness", "pastry", "cafe", "retail", "other"]).optional(),
-      city: z.string().optional(),
       loyalty_type: z.enum(["points", "coupons"]).optional(),
-      limit: z.string().optional(),
-      offset: z.string().optional(),
+      include_automated: z.enum(["true", "false"]).optional().default("true"),
+      limit: z.string().optional().default("20").openapi({ description: "Results per page (default: 20, max: 50)" }),
+      offset: z.string().optional().default("0").openapi({ description: "Number of results to skip (for pagination)" }),
+      count: z.enum(["true", "false"]).optional().default("false").openapi({ description: "Include total count (slower, use only when needed)" }),
     }),
   },
   responses: {
@@ -112,9 +138,10 @@ curl -X GET 'https://your-api.com/api/public/stores?type=coffee&limit=10'
             message: z.string(),
             data: z.array(storeResponseSchema),
             meta: z.object({
-              total: z.number(),
+              total: z.number().nullable(),
               limit: z.number(),
               offset: z.number(),
+              hasMore: z.boolean(),
             }),
           }),
         },
@@ -126,21 +153,23 @@ curl -X GET 'https://your-api.com/api/public/stores?type=coffee&limit=10'
 publicRoutes.openapi(getStoresRoute, async (c) => {
   try {
     const {
+      search,
       type,
       shop_category,
-      city,
       loyalty_type,
+      include_automated = "true",
       limit = "20",
       offset = "0",
+      count: includeCount = "false",
     } = c.req.valid("query");
 
-    const limitNum = parseInt(limit, 10) || 20;
+    // Parse and validate pagination params
+    let limitNum = parseInt(limit, 10) || 20;
+    if (limitNum > 50) limitNum = 50; // Max 50 per request
+    if (limitNum < 1) limitNum = 20;
     const offsetNum = parseInt(offset, 10) || 0;
 
-    let query = supabase
-      .from("shops")
-      .select(
-        `
+    const selectFields = `
         id,
         name,
         description,
@@ -155,13 +184,30 @@ publicRoutes.openapi(getStoresRoute, async (c) => {
         status,
         image_url,
         tag,
+        custom_slug,
+        is_automated,
+        rating,
+        rating_count,
+        price_level,
+        google_maps_url,
         created_at
-      `
-      )
-      .eq("status", "active")
+      `;
+
+    // Only count if explicitly requested (counting is slow on large tables)
+    let query = supabase
+      .from("shops")
+      .select(selectFields, includeCount === "true" ? { count: "exact" } : { count: "planned" })
+      .or("status.eq.active,status.eq.automated")
+      .order("is_automated", { ascending: true, nullsFirst: true })
+      .order("rating", { ascending: false, nullsFirst: false })
       .order("created_at", { ascending: false });
 
-    // Apply filters
+    // Search by name OR address/city (case-insensitive)
+    if (search) {
+      query = query.or(`name.ilike.%${search}%,address.ilike.%${search}%`);
+    }
+
+    // Apply other filters
     if (type) {
       query = query.eq("type", type);
     }
@@ -174,8 +220,9 @@ publicRoutes.openapi(getStoresRoute, async (c) => {
       query = query.eq("loyalty_type", loyalty_type);
     }
 
-    if (city) {
-      query = query.ilike("address", `%${city}%`);
+    // Filter out automated shops if requested
+    if (include_automated === "false") {
+      query = query.or("is_automated.is.null,is_automated.eq.false");
     }
 
     // Apply pagination
@@ -190,14 +237,18 @@ publicRoutes.openapi(getStoresRoute, async (c) => {
       return c.json(standardResponse(500, "Failed to fetch stores"), 500);
     }
 
+    // hasMore: if we got a full page, there's probably more
+    const hasMore = (stores?.length || 0) >= limitNum;
+
     return c.json({
       success: true,
       message: "Stores retrieved successfully",
       data: stores,
       meta: {
-        total: count || 0,
+        total: count || null, // Only populated if count=true
         limit: limitNum,
         offset: offsetNum,
+        hasMore,
       },
     });
   } catch (error) {
@@ -213,7 +264,7 @@ publicRoutes.openapi(getStoresRoute, async (c) => {
 const getStoreByIdRoute = createRoute({
   method: "get",
   path: "/stores/{id}",
-  summary: "🏪 Get store by ID",
+  summary: "🏪 Get store by ID or slug",
   description: `
 Get detailed information about a specific store, including loyalty program details and contact information.
 
@@ -222,21 +273,27 @@ Get detailed information about a specific store, including loyalty program detai
 - Active loyalty program details
 - Contact information and opening hours
 - Social media links if available
+- Supports lookup by UUID or custom slug
 
 **Example Usage:**
 \`\`\`bash
+# By UUID
 curl -X GET 'https://your-api.com/api/public/stores/123e4567-e89b-12d3-a456-426614174000'
+
+# By custom slug
+curl -X GET 'https://your-api.com/api/public/stores/cafe-central'
 \`\`\`
 
 **Use Cases:**
 - Store detail page in customer app
 - Before joining a loyalty program
 - Getting store contact information
+- SEO-friendly store URLs with custom slugs
   `,
   tags: ["Public"],
   request: {
     params: z.object({
-      id: z.string().uuid("Invalid store ID"),
+      id: z.string().min(1, "Store ID or slug is required"),
     }),
   },
   responses: {
@@ -270,37 +327,54 @@ publicRoutes.openapi(getStoreByIdRoute, async (c) => {
   try {
     const { id } = c.req.valid("param");
 
-    const { data: store, error } = await supabase
-      .from("shops")
-      .select(
-        `
+    // Check if the param is a UUID or a custom slug
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
+    const selectFields = `
+      id,
+      name,
+      description,
+      address,
+      phone,
+      email,
+      website,
+      opening_hours,
+      loyalty_type,
+      type,
+      shop_category,
+      brand_color,
+      status,
+      image_url,
+      tag,
+      custom_slug,
+      is_automated,
+      automated_source,
+      external_place_id,
+      rating,
+      rating_count,
+      price_level,
+      google_maps_url,
+      social_media,
+      created_at,
+      loyalty_programs (
         id,
-        name,
-        description,
-        address,
-        phone,
-        email,
-        website,
-        opening_hours,
-        loyalty_type,
         type,
-        shop_category,
-        brand_color,
-        status,
-        image_url,
-        tag,
-        social_media,
-        created_at,
-        loyalty_programs (
-          id,
-          type,
-          points_per_euro,
-          is_active
-        )
-      `
+        points_per_euro,
+        is_active
       )
-      .eq("id", id)
-      .eq("status", "active")
+    `;
+
+    let query = supabase.from("shops").select(selectFields);
+
+    if (isUuid) {
+      query = query.eq("id", id);
+    } else {
+      query = query.eq("custom_slug", id);
+    }
+
+    // Allow both active and automated shops to be viewed
+    const { data: store, error } = await query
+      .or("status.eq.active,status.eq.automated")
       .single();
 
     if (error || !store) {

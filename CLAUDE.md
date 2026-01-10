@@ -18,6 +18,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### API Key Management
 - `bun run scripts/generate-api-keys.ts` - Generate API keys for POS providers
 
+### Google Places Import
+- `bun run scripts/bulk-import-slovenia.ts` - Bulk import stores from Google Places for all Slovenian cities
+- See `docs/GOOGLE_PLACES_IMPORT.md` for detailed guide on importing/managing stores via Google Places API and Supabase MCP
+
 ## Architecture Overview
 
 ### Tech Stack
@@ -95,6 +99,50 @@ POS integration uses business-logic-friendly error handling:
 2. Customer scans QR code (contains shop_id + invoice_id)
 3. Customer redeems points via `/api/app/scan`
 4. Loyalty points/stamps automatically calculated
+
+## Critical: Feature Flags & Protected Columns
+
+### DO NOT BREAK: Shop Feature Flags
+The `shops` table has feature flag columns that gate access to premium features. Breaking these will lock customers out of paid functionality.
+
+**Protected columns in `shops` table:**
+| Column | Purpose | Used By |
+|--------|---------|---------|
+| `external_qr_codes_enabled` | Gates Article QR Codes feature | `src/routes/shop-admin/article-qr-codes.controller.ts` |
+| `reservations_enabled` | Gates Reservation System feature | Reservation routes |
+| `feature_tags` (JSONB array) | New feature flag system | Future feature gating |
+| `custom_slug` | Custom URL slug for friendly shop URLs | `src/routes/public.ts` |
+| `is_automated` | Marks Google Maps imported shops | `src/routes/public.ts`, `src/routes/admin.ts` |
+| `automated_source` | Tracks import source (google_maps, manual) | `src/routes/admin.ts` |
+| `external_place_id` | Google Place ID for duplicate detection | `src/routes/admin.ts` |
+| `rating` | Google Places rating (1.0-5.0) | `src/routes/public.ts` |
+| `rating_count` | Number of Google reviews | `src/routes/public.ts` |
+| `price_level` | Price level 1-4 (€ to €€€€) | `src/routes/public.ts` |
+| `google_maps_url` | Direct link to Google Maps | `src/routes/public.ts` |
+
+**Rules when modifying `shops` table:**
+1. NEVER remove or rename these columns without migration plan
+2. NEVER change default values (they default to `false` for safety)
+3. NEVER add NOT NULL constraints to feature flag columns
+4. When adding new features, follow the pattern: add boolean column with `DEFAULT false`
+5. The `feature_tags` JSONB array is the future standard - new features should use this
+
+**Migration path:**
+- `external_qr_codes_enabled` is being migrated to `feature_tags: ["external-qr-codes"]`
+- Keep boolean columns for backward compatibility until all code is updated
+- See `database/migrations/add_feature_tags_system.sql` for the pattern
+
+**Related tables that depend on feature flags:**
+- `article_qr_codes` - requires `external_qr_codes_enabled = true`
+- `reservation_*` tables - require `reservations_enabled = true`
+
+**Shop status values:**
+- `pending` - Awaiting setup completion
+- `pending_setup` - Setup in progress
+- `active` - Real partner shop, fully operational
+- `suspended` - Temporarily disabled
+- `inactive` - Permanently disabled
+- `automated` - Google Maps import, not a real partner (view-only, no loyalty/coupons)
 
 ## Development Guidelines
 

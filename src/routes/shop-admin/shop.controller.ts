@@ -60,6 +60,8 @@ shopController.openapi(getShopRoute, async (c) => {
         opening_hours,
         image_url,
         tag,
+        custom_slug,
+        is_automated,
         status,
         created_at,
         updated_at,
@@ -162,6 +164,23 @@ shopController.openapi(updateShopRoute, async (c) => {
         ),
         400
       );
+    }
+
+    // Check if custom_slug is being set and verify uniqueness
+    if (updateData.custom_slug) {
+      const { data: existingShop } = await supabase
+        .from("shops")
+        .select("id")
+        .eq("custom_slug", updateData.custom_slug)
+        .neq("id", shop.id)
+        .single();
+
+      if (existingShop) {
+        return c.json(
+          standardResponse(409, "This custom URL slug is already in use by another shop"),
+          409
+        );
+      }
     }
 
     const { data: updatedShop, error } = await supabase
