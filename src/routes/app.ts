@@ -850,7 +850,7 @@ app.openapi(activateCouponRoute, async (c) => {
         redeemed_at: redeemedAt,
         expires_at: redemptionExpiry,
         valid_for_minutes: 5,
-        usage_instructions: `Show QR code or tell staff: "${displayCode}" - Valid for 5 minutes`,
+        usage_instructions: `Pokaži QR kodo ali povej osebju: "${displayCode}" - Veljavno 5 minut`,
       };
 
       return c.json(
@@ -1029,9 +1029,9 @@ app.openapi(getActiveCouponsRoute, async (c) => {
             redeemed_at: redemption.redeemed_at,
             expires_at: expiryTime.toISOString(),
             remaining_seconds: remainingSeconds,
-            usage_instructions: `Show QR code or tell staff: "${displayCode}" - Valid for ${Math.ceil(
+            usage_instructions: `Pokaži QR kodo ali povej osebju: "${displayCode}" - Veljavno ${Math.ceil(
               remainingSeconds / 60
-            )} minutes`,
+            )} minut`,
           };
         }
         return null;
