@@ -91,7 +91,7 @@ curl -X POST https://zvest-loyalty-backend.onrender.com/api/app/scan-qr \\
 **Important Notes:**
 - User must be authenticated to scan QR codes
 - QR codes can only be scanned once
-- QR codes expire after 15 minutes from transaction creation
+- QR codes expire after 5 minutes from transaction creation
 - Points are awarded instantly upon successful scan
   `,
   tags: ["Customer App"],
@@ -251,14 +251,14 @@ app.openapi(scanQRRoute, async (c) => {
       );
     }
 
-    // Check if QR code has expired (15 minutes from transaction creation)
+    // Check if QR code has expired (5 minutes from transaction creation)
     const transactionCreatedAt = new Date(transaction.created_at);
-    const expirationTime = new Date(transactionCreatedAt.getTime() + 15 * 60 * 1000); // 15 minutes
+    const expirationTime = new Date(transactionCreatedAt.getTime() + 5 * 60 * 1000); // 5 minutes
     const now = new Date();
 
     if (now > expirationTime) {
       return c.json(
-        standardResponse(400, "QR code has expired. Points can only be collected within 15 minutes of purchase."),
+        standardResponse(400, "QR code has expired. Points can only be collected within 5 minutes of purchase."),
         400
       );
     }
