@@ -679,6 +679,8 @@ curl -X POST https://zvest-loyalty-backend.onrender.com/api/pos/transactions \\
                   qr_code_data: "PLT_456e7890-e89b-12d3-a456-426614174111",
                   display_text:
                     "Scan for loyalty points\nInvoice: INV-2024-001",
+                  logo_image:
+                    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAG8AAAB0CAYAAACL1Gw4...",
                   created_at: "2024-01-15T14:25:00Z",
                 },
               },
