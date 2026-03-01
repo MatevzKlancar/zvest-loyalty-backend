@@ -251,6 +251,23 @@ app.openapi(scanQRRoute, async (c) => {
       );
     }
 
+    // Check daily scan limit (2 scans per day per user)
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const { count: todayScans } = await supabase
+      .from("transactions")
+      .select("id", { count: "exact", head: true })
+      .eq("app_user_id", appUser.id)
+      .not("qr_scanned_at", "is", null)
+      .gte("qr_scanned_at", todayStart.toISOString());
+
+    if ((todayScans ?? 0) >= 2) {
+      return c.json(
+        standardResponse(400, "Daily scan limit reached. You can only collect points twice per day."),
+        400
+      );
+    }
+
     // Check if QR code has expired (5 minutes from transaction creation)
     const transactionCreatedAt = new Date(transaction.created_at);
     const expirationTime = new Date(transactionCreatedAt.getTime() + 5 * 60 * 1000); // 5 minutes
@@ -1258,6 +1275,158 @@ app.openapi(unregisterPushTokenRoute, async (c) => {
     return c.json(standardResponse(200, "Push token deactivated successfully"));
   } catch (error) {
     logger.error("Error unregistering push token:", error);
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
+// ===========================
+// SERVICE RATINGS
+// ===========================
+
+const submitRatingSchema = z.object({
+  transaction_id: z.string().uuid("Invalid transaction ID"),
+  rating: z.number().int().min(1).max(5),
+  comment: z.string().max(500).optional(),
+});
+
+const ratingResponseSchema = z.object({
+  id: z.string().uuid(),
+  rating: z.number(),
+  comment: z.string().nullable(),
+  created_at: z.string(),
+});
+
+const submitRatingRoute = createRoute({
+  method: "post",
+  path: "/ratings",
+  summary: "Rate service after a transaction",
+  description: `
+Submit a 1-5 star rating for the service/personnel after scanning a QR code.
+
+**Rules:**
+- Transaction must be completed (QR already scanned)
+- Transaction must belong to the authenticated user
+- Only one rating per transaction (cannot update)
+- Optional text comment (max 500 chars)
+  `,
+  tags: ["Customer App"],
+  security: [{ BearerAuth: [] }],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: submitRatingSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Rating submitted successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: ratingResponseSchema,
+          }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid request or already rated",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean().default(false),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+    404: {
+      description: "Transaction not found",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean().default(false),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+  },
+});
+
+app.openapi(submitRatingRoute, async (c) => {
+  try {
+    const appUser = c.get("appUser");
+    const { transaction_id, rating, comment } = c.req.valid("json");
+
+    // Verify transaction exists, belongs to user, and is completed
+    const { data: transaction, error: txError } = await supabase
+      .from("transactions")
+      .select("id, shop_id, status, app_user_id")
+      .eq("id", transaction_id)
+      .single();
+
+    if (txError || !transaction) {
+      return c.json(standardResponse(404, "Transaction not found"), 404);
+    }
+
+    if (transaction.app_user_id !== appUser.id) {
+      return c.json(standardResponse(404, "Transaction not found"), 404);
+    }
+
+    if (transaction.status !== "completed") {
+      return c.json(
+        standardResponse(400, "Transaction must be completed before rating"),
+        400
+      );
+    }
+
+    // Check if already rated
+    const { data: existingRating } = await supabase
+      .from("service_ratings")
+      .select("id")
+      .eq("transaction_id", transaction_id)
+      .maybeSingle();
+
+    if (existingRating) {
+      return c.json(
+        standardResponse(400, "You have already rated this transaction"),
+        400
+      );
+    }
+
+    // Insert rating
+    const { data: newRating, error: insertError } = await supabase
+      .from("service_ratings")
+      .insert({
+        transaction_id,
+        app_user_id: appUser.id,
+        shop_id: transaction.shop_id,
+        rating,
+        comment: comment || null,
+      })
+      .select("id, rating, comment, created_at")
+      .single();
+
+    if (insertError) {
+      if (insertError.code === "23505") {
+        return c.json(
+          standardResponse(400, "You have already rated this transaction"),
+          400
+        );
+      }
+      logger.error("Failed to insert service rating:", insertError);
+      return c.json(standardResponse(500, "Failed to submit rating"), 500);
+    }
+
+    logger.info(`Service rating submitted: ${newRating.id} for transaction ${transaction_id}`);
+    return c.json(standardResponse(200, "Rating submitted successfully", newRating));
+  } catch (error) {
+    logger.error("Error submitting rating:", error);
     return c.json(standardResponse(500, "Internal server error"), 500);
   }
 });

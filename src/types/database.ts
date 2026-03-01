@@ -57,6 +57,7 @@ export type Database = {
           email: string | null
           first_name: string | null
           id: string
+          initial_setup_done: boolean | null
           is_verified: boolean | null
           last_name: string | null
           phone_number: string | null
@@ -74,6 +75,7 @@ export type Database = {
           email?: string | null
           first_name?: string | null
           id?: string
+          initial_setup_done?: boolean | null
           is_verified?: boolean | null
           last_name?: string | null
           phone_number?: string | null
@@ -91,6 +93,7 @@ export type Database = {
           email?: string | null
           first_name?: string | null
           id?: string
+          initial_setup_done?: boolean | null
           is_verified?: boolean | null
           last_name?: string | null
           phone_number?: string | null
@@ -1115,6 +1118,58 @@ export type Database = {
           },
         ]
       }
+      service_ratings: {
+        Row: {
+          app_user_id: string
+          comment: string | null
+          created_at: string
+          id: string
+          rating: number
+          shop_id: string
+          transaction_id: string
+        }
+        Insert: {
+          app_user_id: string
+          comment?: string | null
+          created_at?: string
+          id?: string
+          rating: number
+          shop_id: string
+          transaction_id: string
+        }
+        Update: {
+          app_user_id?: string
+          comment?: string | null
+          created_at?: string
+          id?: string
+          rating?: number
+          shop_id?: string
+          transaction_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "service_ratings_app_user_id_fkey"
+            columns: ["app_user_id"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "service_ratings_shop_id_fkey"
+            columns: ["shop_id"]
+            isOneToOne: false
+            referencedRelation: "shops"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "service_ratings_transaction_id_fkey"
+            columns: ["transaction_id"]
+            isOneToOne: true
+            referencedRelation: "transactions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       shop_owner_invitations: {
         Row: {
           completed_at: string | null
@@ -1189,14 +1244,19 @@ export type Database = {
           address: string | null
           approved_at: string | null
           approved_by: string | null
+          automated_source: string | null
           brand_color: string | null
           created_at: string | null
+          custom_slug: string | null
           customer_id: string
           description: string | null
           email: string | null
+          external_place_id: string | null
           external_qr_codes_enabled: boolean | null
+          google_maps_url: string | null
           id: string
           image_url: string | null
+          is_automated: boolean | null
           loyalty_type: string | null
           name: string
           opening_hours: string | null
@@ -1207,7 +1267,10 @@ export type Database = {
           pos_shop_id: string | null
           pos_sync_data: Json | null
           pos_synced_at: string | null
+          price_level: number | null
           qr_display_text: string | null
+          rating: number | null
+          rating_count: number | null
           reservation_settings: Json | null
           reservations_enabled: boolean | null
           settings: Json | null
@@ -1223,14 +1286,19 @@ export type Database = {
           address?: string | null
           approved_at?: string | null
           approved_by?: string | null
+          automated_source?: string | null
           brand_color?: string | null
           created_at?: string | null
+          custom_slug?: string | null
           customer_id: string
           description?: string | null
           email?: string | null
+          external_place_id?: string | null
           external_qr_codes_enabled?: boolean | null
+          google_maps_url?: string | null
           id?: string
           image_url?: string | null
+          is_automated?: boolean | null
           loyalty_type?: string | null
           name: string
           opening_hours?: string | null
@@ -1241,7 +1309,10 @@ export type Database = {
           pos_shop_id?: string | null
           pos_sync_data?: Json | null
           pos_synced_at?: string | null
+          price_level?: number | null
           qr_display_text?: string | null
+          rating?: number | null
+          rating_count?: number | null
           reservation_settings?: Json | null
           reservations_enabled?: boolean | null
           settings?: Json | null
@@ -1257,14 +1328,19 @@ export type Database = {
           address?: string | null
           approved_at?: string | null
           approved_by?: string | null
+          automated_source?: string | null
           brand_color?: string | null
           created_at?: string | null
+          custom_slug?: string | null
           customer_id?: string
           description?: string | null
           email?: string | null
+          external_place_id?: string | null
           external_qr_codes_enabled?: boolean | null
+          google_maps_url?: string | null
           id?: string
           image_url?: string | null
+          is_automated?: boolean | null
           loyalty_type?: string | null
           name?: string
           opening_hours?: string | null
@@ -1275,7 +1351,10 @@ export type Database = {
           pos_shop_id?: string | null
           pos_sync_data?: Json | null
           pos_synced_at?: string | null
+          price_level?: number | null
           qr_display_text?: string | null
+          rating?: number | null
+          rating_count?: number | null
           reservation_settings?: Json | null
           reservations_enabled?: boolean | null
           settings?: Json | null
@@ -1447,6 +1526,13 @@ export type Database = {
         Args: { p_article_id: string; p_check_time?: string }
         Returns: number
       }
+      get_service_rating_stats: {
+        Args: { p_shop_id: string }
+        Returns: {
+          average_rating: number
+          total_ratings: number
+        }[]
+      }
       get_shop_current_pricing: {
         Args: { p_check_time?: string; p_shop_id: string }
         Returns: {
@@ -1458,6 +1544,7 @@ export type Database = {
           pos_article_id: string
         }[]
       }
+      increment_no_show_count: { Args: { user_id: string }; Returns: undefined }
     }
     Enums: {
       [_ in never]: never
