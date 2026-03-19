@@ -190,7 +190,11 @@ publicRoutes.openapi(getStoresRoute, async (c) => {
         rating_count,
         price_level,
         google_maps_url,
-        created_at
+        created_at,
+        pos_providers (
+          id,
+          name
+        )
       `;
 
     // Only count if explicitly requested (counting is slow on large tables)
@@ -361,6 +365,10 @@ publicRoutes.openapi(getStoreByIdRoute, async (c) => {
         type,
         points_per_euro,
         is_active
+      ),
+      pos_providers (
+        id,
+        name
       )
     `;
 
