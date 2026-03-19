@@ -2180,4 +2180,207 @@ pos.openapi(stornoTransactionRoute, async (c) => {
   }
 });
 
+// ===========================
+// TEST ONLY: Scan QR code via POS API key (no app user required)
+// ===========================
+
+const testScanQRSchema = z.object({
+  qr_code_data: z.string().min(1, "QR code data is required"),
+  test_user_email: z.string().email("Valid test user email required"),
+});
+
+const testScanQRRoute = createRoute({
+  method: "post",
+  path: "/test/scan-qr",
+  summary: "🧪 Test QR scan (POS testing only)",
+  description: `
+**Testing-only endpoint** for POS providers to simulate a customer QR scan.
+Skips daily scan limits and QR expiration checks.
+Only works for transactions belonging to shops of this POS provider.
+
+Requires a test app user email - if the user doesn't exist, it will be noted in the error.
+  `,
+  tags: ["POS Integration"],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: testScanQRSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "QR code scanned successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.any(),
+          }),
+        },
+      },
+    },
+  },
+});
+
+pos.openapi(testScanQRRoute, async (c) => {
+  try {
+    const { qr_code_data, test_user_email } = c.req.valid("json");
+    const posProvider = c.get("posProvider");
+
+    // Parse QR code
+    if (!qr_code_data.startsWith("PLT_")) {
+      return c.json(standardResponse(400, "Invalid QR code format. Expected PLT_{transaction_id}"), 400);
+    }
+
+    const transaction_id = qr_code_data.replace("PLT_", "");
+
+    // Get transaction and verify it belongs to this POS provider's shop
+    const { data: transaction, error: transactionError } = await supabase
+      .from("transactions")
+      .select(`
+        id, shop_id, pos_invoice_id, total_amount, tax_amount, items,
+        loyalty_points_awarded, status, qr_scanned_at, created_at,
+        shops!inner (
+          id, name, type, loyalty_type, points_per_euro, pos_provider_id
+        )
+      `)
+      .eq("id", transaction_id)
+      .eq("qr_code_data", qr_code_data)
+      .single();
+
+    if (transactionError || !transaction) {
+      return c.json(standardResponse(404, "Transaction not found or invalid QR code"), 404);
+    }
+
+    const shop = transaction.shops as any;
+
+    // Verify shop belongs to this POS provider
+    if (shop.pos_provider_id !== posProvider.id) {
+      return c.json(standardResponse(403, "Transaction does not belong to your POS provider's shops"), 403);
+    }
+
+    if (transaction.qr_scanned_at) {
+      return c.json(standardResponse(400, "QR code has already been used"), 400);
+    }
+
+    if (transaction.status !== "pending") {
+      return c.json(standardResponse(400, `Transaction is not eligible for points. Status: ${transaction.status}`), 400);
+    }
+
+    if (shop.loyalty_type !== "points") {
+      return c.json(standardResponse(400, "Shop does not support points loyalty system"), 400);
+    }
+
+    if (!shop.points_per_euro || shop.points_per_euro <= 0) {
+      return c.json(standardResponse(400, "Shop has invalid points configuration"), 400);
+    }
+
+    // Find app user by email
+    const { data: appUser, error: appUserError } = await supabase
+      .from("app_users")
+      .select("id, email, first_name, last_name")
+      .eq("email", test_user_email)
+      .single();
+
+    if (appUserError || !appUser) {
+      return c.json(standardResponse(404, `Test app user not found: ${test_user_email}. Create an app user first.`), 404);
+    }
+
+    // Get or create loyalty account
+    let loyaltyAccount: any;
+    const { data: existingAccount } = await supabase
+      .from("customer_loyalty_accounts")
+      .select("*")
+      .eq("app_user_id", appUser.id)
+      .eq("shop_id", transaction.shop_id)
+      .single();
+
+    if (existingAccount) {
+      loyaltyAccount = existingAccount;
+    } else {
+      const { data: newAccount, error: accountError } = await supabase
+        .from("customer_loyalty_accounts")
+        .insert({
+          app_user_id: appUser.id,
+          shop_id: transaction.shop_id,
+        })
+        .select()
+        .single();
+
+      if (accountError) {
+        logger.error("Failed to create loyalty account:", accountError);
+        return c.json(standardResponse(500, "Failed to create loyalty account"), 500);
+      }
+      loyaltyAccount = newAccount;
+    }
+
+    // Calculate and award points
+    const pointsToAward = Math.floor(transaction.total_amount * shop.points_per_euro);
+
+    const { error: updateTransactionError } = await supabase
+      .from("transactions")
+      .update({
+        app_user_id: appUser.id,
+        loyalty_account_id: loyaltyAccount.id,
+        loyalty_points_awarded: pointsToAward,
+        qr_scanned_at: new Date().toISOString(),
+        status: "completed",
+      })
+      .eq("id", transaction_id);
+
+    if (updateTransactionError) {
+      logger.error("Failed to update transaction:", updateTransactionError);
+      return c.json(standardResponse(500, "Failed to process transaction"), 500);
+    }
+
+    const { data: updatedAccount } = await supabase
+      .from("customer_loyalty_accounts")
+      .update({
+        points_balance: loyaltyAccount.points_balance + pointsToAward,
+        total_spent: loyaltyAccount.total_spent + transaction.total_amount,
+        invoice_count: (loyaltyAccount.invoice_count || 0) + 1,
+        last_visit_at: new Date().toISOString(),
+      })
+      .eq("id", loyaltyAccount.id)
+      .select()
+      .single();
+
+    await supabase.from("transaction_logs").insert({
+      transaction_id,
+      action: "qr_scanned",
+      details: {
+        points_awarded: pointsToAward,
+        app_user_id: appUser.id,
+        loyalty_account_id: loyaltyAccount.id,
+        test_scan: true,
+        pos_provider: posProvider.name,
+      },
+      performed_by: `pos_test_${posProvider.id}`,
+    });
+
+    logger.info(`[TEST] QR scan via POS: ${transaction_id}, points: ${pointsToAward}, user: ${test_user_email}`);
+
+    return c.json(
+      standardResponse(200, `Test scan successful! ${pointsToAward} points awarded to ${test_user_email}`, {
+        transaction_id,
+        shop_name: shop.name,
+        total_amount: transaction.total_amount,
+        points_awarded: pointsToAward,
+        test_user: test_user_email,
+        loyalty_account: {
+          points_balance: updatedAccount?.points_balance ?? loyaltyAccount.points_balance + pointsToAward,
+          total_spent: updatedAccount?.total_spent ?? loyaltyAccount.total_spent + transaction.total_amount,
+        },
+      })
+    );
+  } catch (error) {
+    logger.error("Error in test QR scan:", error);
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
 export default pos;
