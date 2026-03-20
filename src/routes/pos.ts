@@ -308,28 +308,6 @@ pos.openapi(enableShopRoute, async (c) => {
       );
     }
 
-    // Check if pos_shop_id is already used by another shop
-    if (enableData.pos_shop_id) {
-      const { data: duplicateShop } = await supabase
-        .from("shops")
-        .select("id")
-        .eq("pos_provider_id", posProvider.id)
-        .eq("pos_shop_id", enableData.pos_shop_id)
-        .neq("id", shop_id)
-        .single();
-
-      if (duplicateShop) {
-        // Business logic error: POS shop ID already in use - return 200 with error details
-        return c.json(
-          standardResponse(200, "Shop enablement completed", {
-            valid: false,
-            error_code: "pos_id_in_use",
-            error_message: `POS shop ID '${enableData.pos_shop_id}' is already in use by another shop`,
-          })
-        );
-      }
-    }
-
     // Update shop to active status
     const { data: shop, error } = await supabase
       .from("shops")
