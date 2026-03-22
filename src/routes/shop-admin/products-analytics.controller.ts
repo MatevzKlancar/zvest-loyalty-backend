@@ -94,9 +94,11 @@ productsAnalyticsController.openapi(getProductAnalyticsRoute, async (c) => {
     } = c.req.valid("query");
 
     // Parse period
-    const days = period === "7d" ? 7 : period === "30d" ? 30 : period === "90d" ? 90 : 9999;
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
+    const days = period === "7d" ? 7 : period === "30d" ? 30 : period === "90d" ? 90 : null;
+    const startDate = days ? new Date() : null;
+    if (startDate) {
+      startDate.setDate(startDate.getDate() - days);
+    }
 
     // Get all articles for the shop
     const { data: articles, error: articlesError } = await supabase
@@ -114,8 +116,11 @@ productsAnalyticsController.openapi(getProductAnalyticsRoute, async (c) => {
       .from("transactions")
       .select("id, items, created_at, total_amount, status")
       .eq("shop_id", shop.id)
-      .neq("status", "cancelled")
-      .gte("created_at", startDate.toISOString());
+      .neq("status", "cancelled");
+
+    if (startDate) {
+      transactionQuery = transactionQuery.gte("created_at", startDate.toISOString());
+    }
 
     const { data: transactions, error: transError } = await transactionQuery;
 
@@ -150,6 +155,12 @@ productsAnalyticsController.openapi(getProductAnalyticsRoute, async (c) => {
       });
     });
 
+    // Build a lookup from article name to pos_article_id for matching transaction items
+    const nameToArticleId: Map<string, string> = new Map();
+    articles?.forEach(article => {
+      nameToArticleId.set(article.name.toLowerCase(), article.pos_article_id);
+    });
+
     // Process transactions to extract line items
     const basketAnalysis: Map<string, string[]> = new Map();
 
@@ -160,8 +171,20 @@ productsAnalyticsController.openapi(getProductAnalyticsRoute, async (c) => {
       const productIds: string[] = [];
 
       transaction.items.forEach((item: any) => {
-        const productId = item.pos_article_id || item.article_id;
+        // Resolve product ID: try pos_article_id first, then match by name
+        let productId = item.pos_article_id || item.article_id;
+        if (!productId && item.name) {
+          productId = nameToArticleId.get(item.name.toLowerCase());
+        }
         if (!productId) return;
+
+        // If the item has a different key but matches an existing article by name, use the article's key
+        if (!productMetrics.has(productId) && item.name) {
+          const matchedId = nameToArticleId.get(item.name.toLowerCase());
+          if (matchedId && productMetrics.has(matchedId)) {
+            productId = matchedId;
+          }
+        }
 
         productIds.push(productId);
 
@@ -331,7 +354,7 @@ productsAnalyticsController.openapi(getProductAnalyticsRoute, async (c) => {
 
     const analytics = {
       summary: {
-        total_products: articles?.length || 0,
+        total_products: rankedProducts.length,
         products_sold_in_period: rankedProducts.filter(p => p.units_sold > 0).length,
         total_units_sold: totalUnits,
         total_revenue: Math.round(totalRevenue * 100) / 100,
