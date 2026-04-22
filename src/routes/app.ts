@@ -202,15 +202,12 @@ app.openapi(scanQRRoute, async (c) => {
     const { qr_code_data } = c.req.valid("json");
     const appUser = c.get("appUser"); // Get authenticated customer
 
-    // Parse QR code data (format: PLT_{transaction_id})
-    if (!qr_code_data.startsWith("PLT_")) {
-      return c.json(standardResponse(400, "Invalid QR code format"), 400);
-    }
+    // Look up transaction by QR code data
+    // PLT_ format: extract UUID and match by id + qr_code_data
+    // Other formats (POS-supplied): match by qr_code_data directly
+    const isPlatformQR = qr_code_data.startsWith("PLT_");
 
-    const transaction_id = qr_code_data.replace("PLT_", "");
-
-    // Get transaction with shop info
-    const { data: transaction, error: transactionError } = await supabase
+    let query = supabase
       .from("transactions")
       .select(
         `
@@ -232,9 +229,14 @@ app.openapi(scanQRRoute, async (c) => {
         )
       `
       )
-      .eq("id", transaction_id)
-      .eq("qr_code_data", qr_code_data)
-      .single();
+      .eq("qr_code_data", qr_code_data);
+
+    if (isPlatformQR) {
+      const transaction_id = qr_code_data.replace("PLT_", "");
+      query = query.eq("id", transaction_id);
+    }
+
+    const { data: transaction, error: transactionError } = await query.single();
 
     if (transactionError || !transaction) {
       return c.json(
@@ -354,7 +356,7 @@ app.openapi(scanQRRoute, async (c) => {
         qr_scanned_at: new Date().toISOString(),
         status: "completed",
       })
-      .eq("id", transaction_id);
+      .eq("id", transaction.id);
 
     if (updateTransactionError) {
       logger.error("Failed to update transaction:", updateTransactionError);
@@ -384,7 +386,7 @@ app.openapi(scanQRRoute, async (c) => {
 
     // Log the action
     await supabase.from("transaction_logs").insert({
-      transaction_id,
+      transaction_id: transaction.id,
       action: "qr_scanned",
       details: {
         points_awarded: pointsToAward,
@@ -418,7 +420,7 @@ app.openapi(scanQRRoute, async (c) => {
     };
 
     logger.info(
-      `QR code scanned successfully: ${transaction_id}, points awarded: ${pointsToAward}`
+      `QR code scanned successfully: ${transaction.id}, points awarded: ${pointsToAward}`
     );
     return c.json(standardResponse(200, "Points awarded successfully", result));
   } catch (error) {

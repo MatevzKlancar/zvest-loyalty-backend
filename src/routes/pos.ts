@@ -74,6 +74,10 @@ const createTransactionSchema = z.object({
     })
   ),
   metadata: z.record(z.any()).optional(),
+  qr_code_identifier: z.string().min(1).optional().openapi({
+    description: "Optional POS-supplied QR code identifier. If provided, this value is stored as-is (no prefix) and used as the QR code data that customers scan. If omitted, the backend auto-generates a QR code in PLT_{transaction_id} format. Must be unique per shop.",
+    example: "INV-2024-001234",
+  }),
 });
 
 const validateCouponSchema = z.object({
@@ -569,19 +573,37 @@ const createTransactionRoute = createRoute({
   path: "/transactions",
   summary: "Create transaction from POS",
   description: `
-Creates a new transaction in the loyalty platform and automatically generates a QR code for the receipt. This is the core endpoint for POS integration.
+Creates a new transaction in the loyalty platform. This is the core endpoint for POS integration.
 
-**Process Flow:**
-1. POS system processes a sale
-2. POS calls this endpoint with transaction details
-3. System generates unique QR code
-4. QR code is displayed on receipt
-5. Customer scans QR to earn points
+## QR Code Options
 
-**QR Code Format:**
-The generated QR code follows the format \`PLT_{transaction_id}\` and is designed for one-time use.
+There are two ways to handle QR codes on receipts:
 
-**Example Usage:**
+### Option A: Platform-generated QR (default)
+
+1. POS calls this endpoint with transaction details
+2. Backend generates a unique QR code in \`PLT_{transaction_id}\` format
+3. QR code is returned in the response as \`qr_code_data\`
+4. POS prints QR code on receipt
+5. Customer scans QR in Zvest app to earn points
+
+### Option B: POS-supplied QR (\`qr_code_identifier\`)
+
+For POS systems that already print their own QR codes on receipts:
+
+1. POS generates QR code locally and prints receipt immediately
+2. POS sends transaction to this endpoint with \`qr_code_identifier\` set to the same value encoded in the receipt QR code
+3. Backend stores the identifier as-is (no prefix added)
+4. Customer scans the existing QR code on the receipt with Zvest app to earn points
+
+This approach decouples receipt printing from the API call — the POS does not need to wait for an API response before printing the receipt.
+
+**Requirements for POS-supplied QR:**
+- \`qr_code_identifier\` must be unique within the shop (duplicates are rejected)
+- The transaction must be sent to the API before or at the same time the customer scans the QR code
+
+## Example Usage
+
 \`\`\`bash
 curl -X POST https://zvest-loyalty-backend.onrender.com/api/pos/transactions \\
   -H "Content-Type: application/json" \\
@@ -590,14 +612,15 @@ curl -X POST https://zvest-loyalty-backend.onrender.com/api/pos/transactions \\
     "shop_id": "shop-uuid",
     "pos_invoice_id": "INV-2024-001",
     "total_amount": 15.50,
-    "items": [...]
+    "items": [...],
+    "qr_code_identifier": "your-own-qr-data"
   }'
 \`\`\`
 
 **Important Notes:**
-- Each transaction generates a unique QR code
-- QR codes expire after 30 days if not scanned
+- Each transaction generates a unique QR code (or uses the one you provide)
 - Only transactions with status 'pending' can award points
+- If \`qr_code_identifier\` is omitted, the default \`PLT_{transaction_id}\` format is used
   `,
   tags: ["POS Integration"],
   security: [{ ApiKeyAuth: [] }],
@@ -762,7 +785,32 @@ pos.openapi(createTransactionRoute, async (c) => {
       );
     }
 
+    // If POS provided a custom QR identifier, check it's not already used for this shop
+    if (transactionData.qr_code_identifier) {
+      const { data: existingQR } = await supabase
+        .from("transactions")
+        .select("id")
+        .eq("qr_code_data", transactionData.qr_code_identifier)
+        .eq("shop_id", transactionData.shop_id)
+        .single();
+
+      if (existingQR) {
+        return c.json(
+          standardResponse(
+            200,
+            "Transaction creation completed",
+            createLocalizedErrorForShop(
+              "transaction_duplicate_invoice",
+              shop.settings
+            )
+          )
+        );
+      }
+    }
+
     // Create transaction
+    // If qr_code_identifier is provided, it's stored as qr_code_data directly.
+    // If not, the DB trigger auto-generates PLT_{transaction_id}.
     const { data: transaction, error } = await supabase
       .from("transactions")
       .insert({
@@ -773,6 +821,9 @@ pos.openapi(createTransactionRoute, async (c) => {
         items: transactionData.items,
         status: "pending",
         metadata: transactionData.metadata || {},
+        ...(transactionData.qr_code_identifier && {
+          qr_code_data: transactionData.qr_code_identifier,
+        }),
       })
       .select(
         "id, shop_id, pos_invoice_id, total_amount, status, qr_code_data, created_at"
@@ -2209,15 +2260,10 @@ pos.openapi(testScanQRRoute, async (c) => {
     const { qr_code_data, test_user_email } = c.req.valid("json");
     const posProvider = c.get("posProvider");
 
-    // Parse QR code
-    if (!qr_code_data.startsWith("PLT_")) {
-      return c.json(standardResponse(400, "Invalid QR code format. Expected PLT_{transaction_id}"), 400);
-    }
+    // Look up transaction by QR code data (supports both PLT_ and POS-supplied formats)
+    const isPlatformQR = qr_code_data.startsWith("PLT_");
 
-    const transaction_id = qr_code_data.replace("PLT_", "");
-
-    // Get transaction and verify it belongs to this POS provider's shop
-    const { data: transaction, error: transactionError } = await supabase
+    let query = supabase
       .from("transactions")
       .select(`
         id, shop_id, pos_invoice_id, total_amount, tax_amount, items,
@@ -2226,9 +2272,14 @@ pos.openapi(testScanQRRoute, async (c) => {
           id, name, type, loyalty_type, points_per_euro, pos_provider_id
         )
       `)
-      .eq("id", transaction_id)
-      .eq("qr_code_data", qr_code_data)
-      .single();
+      .eq("qr_code_data", qr_code_data);
+
+    if (isPlatformQR) {
+      const transaction_id = qr_code_data.replace("PLT_", "");
+      query = query.eq("id", transaction_id);
+    }
+
+    const { data: transaction, error: transactionError } = await query.single();
 
     if (transactionError || !transaction) {
       return c.json(standardResponse(404, "Transaction not found or invalid QR code"), 404);
@@ -2308,7 +2359,7 @@ pos.openapi(testScanQRRoute, async (c) => {
         qr_scanned_at: new Date().toISOString(),
         status: "completed",
       })
-      .eq("id", transaction_id);
+      .eq("id", transaction.id);
 
     if (updateTransactionError) {
       logger.error("Failed to update transaction:", updateTransactionError);
@@ -2328,7 +2379,7 @@ pos.openapi(testScanQRRoute, async (c) => {
       .single();
 
     await supabase.from("transaction_logs").insert({
-      transaction_id,
+      transaction_id: transaction.id,
       action: "qr_scanned",
       details: {
         points_awarded: pointsToAward,
@@ -2340,11 +2391,11 @@ pos.openapi(testScanQRRoute, async (c) => {
       performed_by: `pos_test_${posProvider.id}`,
     });
 
-    logger.info(`[TEST] QR scan via POS: ${transaction_id}, points: ${pointsToAward}, user: ${test_user_email}`);
+    logger.info(`[TEST] QR scan via POS: ${transaction.id}, points: ${pointsToAward}, user: ${test_user_email}`);
 
     return c.json(
       standardResponse(200, `Test scan successful! ${pointsToAward} points awarded to ${test_user_email}`, {
-        transaction_id,
+        transaction_id: transaction.id,
         shop_name: shop.name,
         total_amount: transaction.total_amount,
         points_awarded: pointsToAward,
