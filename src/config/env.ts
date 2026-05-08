@@ -23,6 +23,10 @@ const envSchema = z.object({
     .string()
     .default("false")
     .transform((v) => v.toLowerCase() === "true"),
+
+  // Shared secret guarding the /api/internal/jobs/* endpoints called by
+  // pg_cron via pg_net. Generate with: openssl rand -hex 32
+  INTERNAL_JOB_SECRET: z.string().min(16).optional(),
 });
 
 export const env = envSchema.parse(process.env);

@@ -329,6 +329,10 @@ app.route("/api/pos", posRoutes);
 // App routes - for customer mobile application
 app.route("/api/app", appRoutes);
 
+// Internal job endpoints - triggered by pg_cron via pg_net, guarded by INTERNAL_JOB_SECRET
+import { internalJobsController } from "./routes/internal/jobs.controller";
+app.route("/api/internal/jobs", internalJobsController);
+
 // Reservation module routes
 app.route("/api/shop-admin/reservations", shopAdminReservationRoutes);
 app.route("/api/public/reservations", publicReservationRoutes);

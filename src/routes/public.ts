@@ -489,12 +489,15 @@ publicRoutes.openapi(getStoreCouponsRoute, async (c) => {
       return c.json(standardResponse(404, "Store not found"), 404);
     }
 
-    // Build coupon query
+    // Build coupon query.
+    // Birthday-only coupons are hidden from the public list — they're only
+    // visible inside the authenticated app to users whose DOB matches today.
     let query = supabase
       .from("coupons")
       .select("*", { count: "exact" })
       .eq("shop_id", id)
       .eq("is_active", true)
+      .eq("is_birthday_only", false)
       .order("created_at", { ascending: false });
 
     // Apply filters

@@ -9,6 +9,7 @@ import { transactionsController } from "./transactions.controller";
 import { customersController } from "./customers.controller";
 import { dashboardController } from "./dashboard.controller";
 import { notificationsController } from "./notifications.controller";
+import { notificationPlansController } from "./notification-plans.controller";
 import { articleQRCodesController } from "./article-qr-codes.controller";
 import { ratingsController } from "./ratings.controller";
 
@@ -28,6 +29,7 @@ shopAdmin.route("/", transactionsController);
 shopAdmin.route("/", customersController);
 shopAdmin.route("/", dashboardController);
 shopAdmin.route("/", notificationsController);
+shopAdmin.route("/", notificationPlansController);
 shopAdmin.route("/", articleQRCodesController);
 shopAdmin.route("/", ratingsController);
 

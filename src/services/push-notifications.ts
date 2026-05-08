@@ -369,10 +369,19 @@ export class PushNotificationService {
           count: birthdayUserIds.length,
         });
 
+        // If the template has a coupon_id, surface it in the push payload so the
+        // native app can deep-link to the (is_birthday_only) coupon. The coupon
+        // is gated on the app side: it's only visible to users whose DOB matches
+        // today, and one-time-use is enforced at redeem time.
+        const baseData = (template.data || {}) as Record<string, any>;
+        const data: Record<string, any> = (template as any).coupon_id
+          ? { ...baseData, coupon_id: (template as any).coupon_id }
+          : baseData;
+
         await this.sendToUsers(birthdayUserIds, {
           title: template.title,
           body: template.body,
-          data: template.data || {},
+          data,
           shopId,
           notificationType: "birthday",
         });

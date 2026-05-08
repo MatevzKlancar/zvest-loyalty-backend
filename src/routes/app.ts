@@ -672,6 +672,7 @@ app.openapi(activateCouponRoute, async (c) => {
         expires_at,
         used_count,
         is_active,
+        is_birthday_only,
         shops!inner (
           id,
           name,
@@ -695,6 +696,44 @@ app.openapi(activateCouponRoute, async (c) => {
     // Check if coupon has expired
     if (coupon.expires_at && new Date(coupon.expires_at) < new Date()) {
       return c.json(standardResponse(400, "Coupon has expired"), 400);
+    }
+
+    // Birthday-only coupons: only redeemable on the user's actual birthday and
+    // only once per user, ever. Returns 404 (not 400) so the coupon never leaks
+    // its existence to non-eligible users.
+    if ((coupon as any).is_birthday_only) {
+      const { data: dobRow } = await supabase
+        .from("app_users")
+        .select("date_of_birth")
+        .eq("id", appUser.id)
+        .single();
+
+      const dob = dobRow?.date_of_birth ? new Date(dobRow.date_of_birth) : null;
+      const today = new Date();
+      const matchesToday =
+        !!dob &&
+        dob.getMonth() + 1 === today.getMonth() + 1 &&
+        dob.getDate() === today.getDate();
+
+      if (!matchesToday) {
+        return c.json(
+          standardResponse(404, "Coupon not found or not available"),
+          404
+        );
+      }
+
+      const { count: priorRedemptions } = await supabase
+        .from("coupon_redemptions")
+        .select("id", { count: "exact", head: true })
+        .eq("coupon_id", coupon.id)
+        .eq("app_user_id", appUser.id);
+
+      if ((priorRedemptions ?? 0) > 0) {
+        return c.json(
+          standardResponse(400, "Birthday coupon already used"),
+          400
+        );
+      }
     }
 
     // Get customer loyalty account for this shop (appUser is already authenticated)

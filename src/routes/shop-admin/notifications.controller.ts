@@ -560,6 +560,14 @@ const setBirthdayNotificationRoute = createRoute({
             is_active: z
               .boolean()
               .describe("Whether birthday notifications are enabled"),
+            coupon_id: z
+              .string()
+              .uuid()
+              .nullable()
+              .optional()
+              .describe(
+                "Optional: coupon to attach to the birthday push. Should usually be an is_birthday_only coupon. Pass null to clear."
+              ),
           }),
         },
       },
@@ -587,7 +595,24 @@ const setBirthdayNotificationRoute = createRoute({
 notificationsController.openapi(setBirthdayNotificationRoute, async (c) => {
   try {
     const shop = c.get("shop");
-    const { title, body, data, is_active } = c.req.valid("json");
+    const { title, body, data, is_active, coupon_id } = c.req.valid("json");
+
+    // If a coupon_id was supplied, verify it belongs to this shop. Cheap
+    // ownership check so a shop can't bind another shop's coupon.
+    if (coupon_id) {
+      const { data: coupon } = await supabase
+        .from("coupons")
+        .select("id")
+        .eq("id", coupon_id)
+        .eq("shop_id", shop.id)
+        .single();
+      if (!coupon) {
+        return c.json(
+          standardResponse(400, "coupon_id does not belong to this shop"),
+          400
+        );
+      }
+    }
 
     const { data: existing } = await supabase
       .from("notification_templates")
@@ -599,15 +624,19 @@ notificationsController.openapi(setBirthdayNotificationRoute, async (c) => {
     let result;
 
     if (existing) {
+      const updatePayload: Record<string, any> = {
+        title,
+        body,
+        data: data || {},
+        is_active,
+        updated_at: new Date().toISOString(),
+      };
+      // coupon_id is optional in the schema; only touch it when the caller sent it.
+      if (coupon_id !== undefined) updatePayload.coupon_id = coupon_id;
+
       const { data: updated, error } = await supabase
         .from("notification_templates")
-        .update({
-          title,
-          body,
-          data: data || {},
-          is_active,
-          updated_at: new Date().toISOString(),
-        })
+        .update(updatePayload)
         .eq("id", existing.id)
         .select("id, is_active")
         .single();
@@ -622,17 +651,20 @@ notificationsController.openapi(setBirthdayNotificationRoute, async (c) => {
 
       result = updated;
     } else {
+      const insertPayload: Record<string, any> = {
+        shop_id: shop.id,
+        name: "Birthday Notification",
+        type: "birthday",
+        title,
+        body,
+        data: data || {},
+        is_active,
+      };
+      if (coupon_id !== undefined) insertPayload.coupon_id = coupon_id;
+
       const { data: created, error } = await supabase
         .from("notification_templates")
-        .insert({
-          shop_id: shop.id,
-          name: "Birthday Notification",
-          type: "birthday",
-          title,
-          body,
-          data: data || {},
-          is_active,
-        })
+        .insert(insertPayload)
         .select("id, is_active")
         .single();
 
@@ -680,6 +712,15 @@ const getBirthdayNotificationRoute = createRoute({
                 body: z.string(),
                 data: z.record(z.any()),
                 is_active: z.boolean(),
+                coupon_id: z.string().nullable(),
+                coupon: z
+                  .object({
+                    id: z.string(),
+                    name: z.string(),
+                    type: z.string(),
+                    is_birthday_only: z.boolean(),
+                  })
+                  .nullable(),
               })
               .nullable(),
           }),
@@ -695,7 +736,7 @@ notificationsController.openapi(getBirthdayNotificationRoute, async (c) => {
 
     const { data: template, error } = await supabase
       .from("notification_templates")
-      .select("id, title, body, data, is_active")
+      .select("id, title, body, data, is_active, coupon_id")
       .eq("shop_id", shop.id)
       .eq("type", "birthday")
       .single();
@@ -708,11 +749,22 @@ notificationsController.openapi(getBirthdayNotificationRoute, async (c) => {
       );
     }
 
+    let coupon: any = null;
+    const couponId = (template as any)?.coupon_id;
+    if (couponId) {
+      const { data: c2 } = await supabase
+        .from("coupons")
+        .select("id, name, type, is_birthday_only")
+        .eq("id", couponId)
+        .single();
+      coupon = c2 ?? null;
+    }
+
     return c.json(
       standardResponse(
         200,
         template ? "Template found" : "No template configured",
-        template || null
+        template ? { ...template, coupon } : null
       )
     );
   } catch (error) {

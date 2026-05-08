@@ -8,9 +8,9 @@ import { pushNotificationService } from "../services/push-notifications";
  * Should be run every 15-30 minutes to verify delivery and handle errors.
  *
  * You can run this job using:
- * - Cron job: `*/15 * * * * bun run src/jobs/check-notification-receipts.ts`
+ * - Cron job (every 15 min): bun run src/jobs/check-notification-receipts.ts
  * - Cloud scheduler
- * - Manual trigger: `bun run src/jobs/check-notification-receipts.ts`
+ * - Manual trigger: bun run src/jobs/check-notification-receipts.ts
  */
 
 async function runReceiptChecker() {
