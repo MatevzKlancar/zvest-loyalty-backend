@@ -12,6 +12,7 @@ import { notificationsController } from "./notifications.controller";
 import { notificationPlansController } from "./notification-plans.controller";
 import { articleQRCodesController } from "./article-qr-codes.controller";
 import { ratingsController } from "./ratings.controller";
+import { weeklyReportController } from "./weekly-report.controller";
 
 const shopAdmin = new OpenAPIHono<UnifiedAuthContext>();
 
@@ -32,5 +33,6 @@ shopAdmin.route("/", notificationsController);
 shopAdmin.route("/", notificationPlansController);
 shopAdmin.route("/", articleQRCodesController);
 shopAdmin.route("/", ratingsController);
+shopAdmin.route("/", weeklyReportController);
 
 export default shopAdmin;

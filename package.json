@@ -15,6 +15,7 @@
     "@hono/swagger-ui": "^0.2.0",
     "@hono/zod-openapi": "^0.19.8",
     "@hono/zod-validator": "^0.7.0",
+    "@google/generative-ai": "^0.21.0",
     "@scalar/hono-api-reference": "^0.5.0",
     "@supabase/supabase-js": "^2.39.0",
     "expo-server-sdk": "^4.0.0",

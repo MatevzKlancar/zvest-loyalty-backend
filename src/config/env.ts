@@ -27,6 +27,11 @@ const envSchema = z.object({
   // Shared secret guarding the /api/internal/jobs/* endpoints called by
   // pg_cron via pg_net. Generate with: openssl rand -hex 32
   INTERNAL_JOB_SECRET: z.string().min(16).optional(),
+
+  // AI weekly report
+  LLM_PROVIDER: z.enum(["gemini"]).default("gemini"),
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default("gemini-2.5-pro"),
 });
 
 export const env = envSchema.parse(process.env);
