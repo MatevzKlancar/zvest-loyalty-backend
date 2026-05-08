@@ -1,7 +1,34 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { env } from "../../config/env";
 import { logger } from "../../config/logger";
 import type { AIReportOutput, LLMRequest } from "./index";
+
+const SCHEMA_SAFE_MODELS = new Set(["gemini-2.0-flash", "gemini-2.5-flash"]);
+
+const responseSchema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    summary: { type: SchemaType.STRING },
+    highlights: {
+      type: SchemaType.ARRAY,
+      items: { type: SchemaType.STRING },
+    },
+    recommendations: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          title: { type: SchemaType.STRING },
+          action: { type: SchemaType.STRING },
+          expected_impact: { type: SchemaType.STRING },
+          evidence: { type: SchemaType.STRING },
+        },
+        required: ["title", "action", "expected_impact", "evidence"],
+      },
+    },
+  },
+  required: ["summary", "highlights", "recommendations"],
+};
 
 export async function generateWithGemini(
   req: LLMRequest
@@ -11,13 +38,20 @@ export async function generateWithGemini(
   }
 
   const client = new GoogleGenerativeAI(env.GEMINI_API_KEY);
+  const useSchema = SCHEMA_SAFE_MODELS.has(env.GEMINI_MODEL);
+
+  const generationConfig: any = {
+    responseMimeType: "application/json",
+    temperature: 0.4,
+  };
+  if (useSchema) {
+    generationConfig.responseSchema = responseSchema;
+  }
+
   const model = client.getGenerativeModel({
     model: env.GEMINI_MODEL,
     systemInstruction: req.systemPrompt,
-    generationConfig: {
-      responseMimeType: "application/json",
-      temperature: 0.4,
-    },
+    generationConfig,
   });
 
   let text: string;

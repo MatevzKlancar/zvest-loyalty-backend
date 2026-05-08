@@ -20,6 +20,7 @@ export interface WeeklyStatsPacket {
     worst_day: { day: string; weekday: string; total: number } | null;
     peak_hours: Array<{ hour: number; total: number }>;
     dead_hours: Array<{ hour: number; total: number }>;
+    likely_closed_weekdays: string[];
   };
   coupons: {
     active_count: number;
@@ -189,6 +190,21 @@ async function aggregateRevenue(
   const peakHours = [...activeHours].sort((a, b) => b.total - a.total).slice(0, 3);
   const deadHours = [...activeHours].sort((a, b) => a.total - b.total).slice(0, 3);
 
+  const prevByWeekday = new Map<number, number>();
+  for (const t of previous) {
+    const wd = new Date(t.created_at).getDay();
+    prevByWeekday.set(wd, (prevByWeekday.get(wd) ?? 0) + 1);
+  }
+  const likelyClosedWeekdays: string[] = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(start.getTime() + i * 24 * 60 * 60 * 1000);
+    const wd = d.getDay();
+    const currentCount = byDay.get(isoDay(d))?.count ?? 0;
+    if (currentCount === 0 && (prevByWeekday.get(wd) ?? 0) === 0) {
+      likelyClosedWeekdays.push(WEEKDAYS[wd]);
+    }
+  }
+
   return {
     total: round2(total),
     transaction_count: count,
@@ -201,6 +217,7 @@ async function aggregateRevenue(
     worst_day: worstDay,
     peak_hours: peakHours.map(({ hour, total }) => ({ hour, total })),
     dead_hours: deadHours.map(({ hour, total }) => ({ hour, total })),
+    likely_closed_weekdays: likelyClosedWeekdays,
   };
 }
 
@@ -228,6 +245,7 @@ async function aggregateCoupons(
 
   const couponIds = (coupons ?? []).map((c) => c.id);
   let redemptions: any[] = [];
+  const lifetimeCountByCoupon = new Map<string, number>();
   if (couponIds.length > 0) {
     const { data: reds, error: rErr } = await client
       .from("coupon_redemptions")
@@ -240,6 +258,21 @@ async function aggregateCoupons(
       logger.error("Weekly report: failed to fetch redemptions:", rErr);
     } else {
       redemptions = reds ?? [];
+    }
+
+    const { data: lifetimeReds, error: lErr } = await client
+      .from("coupon_redemptions")
+      .select("coupon_id")
+      .in("coupon_id", couponIds);
+    if (lErr) {
+      logger.error("Weekly report: failed to fetch lifetime redemptions:", lErr);
+    } else {
+      for (const r of lifetimeReds ?? []) {
+        lifetimeCountByCoupon.set(
+          r.coupon_id,
+          (lifetimeCountByCoupon.get(r.coupon_id) ?? 0) + 1
+        );
+      }
     }
   }
 
@@ -264,13 +297,13 @@ async function aggregateCoupons(
     };
   });
 
-  const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
   const underperformers: Array<{ id: string; name: string; reason: string }> = [];
   for (const c of coupons ?? []) {
     if (!c.is_active) continue;
     const ageDays = (Date.now() - new Date(c.created_at).getTime()) / (1000 * 60 * 60 * 24);
     if (ageDays < 14) continue;
-    if ((c.used_count ?? 0) === 0) {
+    const lifetime = lifetimeCountByCoupon.get(c.id) ?? 0;
+    if (lifetime === 0) {
       underperformers.push({
         id: c.id,
         name: c.name,

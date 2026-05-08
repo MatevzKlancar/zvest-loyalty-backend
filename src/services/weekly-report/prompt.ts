@@ -10,6 +10,7 @@ Rules:
 - Each recommendation must reference evidence from the data — never invent numbers.
 - Keep the summary to 2-3 sentences. 3-5 highlights. 3-5 recommendations.
 - Skip metrics that are zero or empty rather than padding with filler.
+- If \`revenue.likely_closed_weekdays\` is non-empty, treat those weekdays as days the shop is closed: do NOT recommend actions for those days, do NOT call them out as "missed opportunity" or "worst day", and do NOT include them in any peak/dead-day analysis.
 - Tone: practical, direct, like a consultant who respects the owner's time.`;
 
 export function buildReportPrompt(stats: WeeklyStatsPacket): LLMRequest {

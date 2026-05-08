@@ -1664,12 +1664,63 @@ pos.openapi(validateCouponRoute, async (c) => {
         );
       }
 
-      // Mark redemption as used
+      // Best-effort: compute discount_applied (€) at validate time. Purely additive;
+      // failure is logged but never propagated.
+      // - 'fixed' coupons: sum of discount_value across articles_data = exact € off.
+      // - 'percentage' coupons targeting specific articles: € off = sum(base_price * pct/100).
+      //   We can compute this because articles_data carries the article_id and we can
+      //   look up base_price. Without an article_id (global %-off coupon) we'd need
+      //   the cart subtotal — leave as 0 for that case.
+      let computedDiscountApplied = 0;
+      try {
+        if (coupon.articles_data) {
+          const arr = Array.isArray(coupon.articles_data)
+            ? coupon.articles_data
+            : JSON.parse(coupon.articles_data);
+          if (Array.isArray(arr) && arr.length > 0) {
+            if (coupon.type === "fixed") {
+              computedDiscountApplied = arr.reduce(
+                (sum: number, a: any) => sum + Number(a?.discount_value ?? 0),
+                0
+              );
+            } else if (coupon.type === "percentage") {
+              const articleIds = arr
+                .map((a: any) => a?.article_id)
+                .filter((id: any) => !!id);
+              if (articleIds.length > 0) {
+                const { data: arts } = await supabase
+                  .from("articles")
+                  .select("id, base_price")
+                  .in("id", articleIds);
+                const priceById = new Map<string, number>();
+                for (const a of arts ?? []) {
+                  priceById.set(a.id, Number(a.base_price ?? 0));
+                }
+                computedDiscountApplied = arr.reduce((sum: number, a: any) => {
+                  if (!a?.article_id) return sum;
+                  const price = priceById.get(a.article_id) ?? 0;
+                  const pct = Number(a?.discount_value ?? 0);
+                  return sum + (price * pct) / 100;
+                }, 0);
+              }
+              // else: global percentage coupon — we don't know the cart subtotal.
+              // Leave at 0; covered by future v3 work that extends the POS contract.
+            }
+          }
+        }
+      } catch (e) {
+        logger.warn("Failed to compute discount_applied for redemption", e);
+        computedDiscountApplied = 0;
+      }
+      // Round to 2dp to match how money is stored elsewhere
+      computedDiscountApplied = Math.round(computedDiscountApplied * 100) / 100;
+
+      // Mark redemption as used (and persist the computed discount_applied)
       const { error: updateError } = await supabase
         .from("coupon_redemptions")
         .update({
           status: "used",
-          // Note: articles_data contains the discount info, not a simple value field
+          discount_applied: computedDiscountApplied,
         })
         .eq("redemption_code", normalizedCode);
 
@@ -1679,6 +1730,27 @@ pos.openapi(validateCouponRoute, async (c) => {
           standardResponse(500, "Failed to mark coupon as used"),
           500
         );
+      }
+
+      // Best-effort: increment coupons.used_count via atomic RPC.
+      // This is purely analytics — if it fails, the coupon is still successfully
+      // redeemed from the customer's and POS's point of view. Log and continue.
+      try {
+        const { error: incErr } = await supabase.rpc(
+          "increment_coupon_used_count",
+          { p_coupon_id: coupon.id }
+        );
+        if (incErr) {
+          logger.warn("Failed to increment coupon.used_count", {
+            coupon_id: coupon.id,
+            error: incErr.message,
+          });
+        }
+      } catch (e: any) {
+        logger.warn("Exception incrementing coupon.used_count", {
+          coupon_id: coupon.id,
+          error: e?.message,
+        });
       }
 
       // Generate message based on coupon type and articles_data
