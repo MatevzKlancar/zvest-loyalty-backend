@@ -1,18 +1,38 @@
 import { Expo, ExpoPushMessage, ExpoPushTicket } from "expo-server-sdk";
 import { logger } from "../config/logger";
 import { supabase } from "../config/database";
+import { env } from "../config/env";
+
+const RECIPIENT_PAGE_SIZE = 1000;
+
+type NotificationCategory =
+  | "manual"
+  | "daily_meal"
+  | "specials"
+  | "birthday"
+  | "coupon_ready"
+  | "points_earned";
 
 export class PushNotificationService {
   private expo: Expo;
+  private deliveryEnabled: boolean;
 
   constructor() {
     this.expo = new Expo({
       useFcmV1: true, // Use FCM v1 (required for 2025+)
     });
+    this.deliveryEnabled = env.PUSH_NOTIFICATIONS_DELIVERY_ENABLED;
+    if (!this.deliveryEnabled) {
+      logger.warn(
+        "Push notification delivery is DISABLED — messages will be recorded with status='dry_run'. Set PUSH_NOTIFICATIONS_DELIVERY_ENABLED=true to enable."
+      );
+    }
   }
 
   /**
-   * Send notification to specific users by their IDs
+   * Send notification to specific users by their IDs.
+   * Honours the global PUSH_NOTIFICATIONS_DELIVERY_ENABLED kill switch:
+   * when off, builds + records the messages but skips the Expo dispatch.
    */
   async sendToUsers(
     userIds: string[],
@@ -25,7 +45,6 @@ export class PushNotificationService {
     }
   ) {
     try {
-      // Get active push tokens for users
       const { data: tokens, error: tokenError } = await supabase
         .from("push_tokens")
         .select("expo_push_token, app_user_id")
@@ -42,14 +61,12 @@ export class PushNotificationService {
         return { success: false, message: "No push tokens found" };
       }
 
-      // Validate tokens and create messages
       const messages: ExpoPushMessage[] = [];
       const validTokens: typeof tokens = [];
 
       for (const token of tokens) {
         if (!Expo.isExpoPushToken(token.expo_push_token)) {
           logger.error("Invalid push token", { token: token.expo_push_token });
-          // Mark invalid token as inactive
           await supabase
             .from("push_tokens")
             .update({ is_active: false })
@@ -72,7 +89,46 @@ export class PushNotificationService {
         return { success: false, message: "No valid push tokens found" };
       }
 
-      // Send notifications in batches (Expo handles max 100 per request)
+      // Kill switch: record but do not dispatch.
+      if (!this.deliveryEnabled) {
+        const dryRunRecords = validTokens.map((token) => ({
+          app_user_id: token.app_user_id,
+          shop_id: notification.shopId,
+          notification_type: notification.notificationType,
+          title: notification.title,
+          body: notification.body,
+          data: notification.data || {},
+          expo_push_token: token.expo_push_token,
+          expo_ticket_id: null,
+          status: "dry_run",
+          error_message: null,
+          sent_at: new Date().toISOString(),
+        }));
+
+        const { error: insertError } = await supabase
+          .from("push_notifications")
+          .insert(dryRunRecords);
+
+        if (insertError) {
+          logger.error("Error saving dry-run notification records", {
+            error: insertError,
+          });
+        }
+
+        logger.info("Push delivery disabled — dry-run recorded", {
+          count: validTokens.length,
+          notificationType: notification.notificationType,
+        });
+
+        return {
+          success: true,
+          sent: 0,
+          failed: 0,
+          dryRun: validTokens.length,
+          total: validTokens.length,
+        };
+      }
+
       const chunks = this.expo.chunkPushNotifications(messages);
       const tickets: ExpoPushTicket[] = [];
 
@@ -89,7 +145,6 @@ export class PushNotificationService {
         }
       }
 
-      // Store notification records in database
       const notificationRecords = tickets.map((ticket, index) => ({
         app_user_id: validTokens[index]?.app_user_id,
         shop_id: notification.shopId,
@@ -97,6 +152,7 @@ export class PushNotificationService {
         title: notification.title,
         body: notification.body,
         data: notification.data || {},
+        expo_push_token: validTokens[index]?.expo_push_token,
         expo_ticket_id: ticket.status === "ok" ? ticket.id : null,
         status: ticket.status === "ok" ? "sent" : "error",
         error_message:
@@ -138,7 +194,47 @@ export class PushNotificationService {
   }
 
   /**
-   * Send notification to all customers of a shop
+   * Resolve recipients for a shop+category combo from the subscription table.
+   * Loyalty membership no longer implies push consent — the user must have
+   * favorited the shop AND have categories.<category>=true.
+   */
+  private async resolveSubscribedUserIds(
+    shopId: string,
+    category: NotificationCategory
+  ): Promise<string[]> {
+    const userIds: string[] = [];
+    let from = 0;
+
+    while (true) {
+      const to = from + RECIPIENT_PAGE_SIZE - 1;
+      const { data, error } = await supabase
+        .from("user_shop_notification_preferences")
+        .select("app_user_id, categories")
+        .eq("shop_id", shopId)
+        .range(from, to);
+
+      if (error) {
+        logger.error("Error fetching subscriptions", { error, shopId });
+        break;
+      }
+
+      if (!data || data.length === 0) break;
+
+      for (const row of data) {
+        const cats = (row.categories ?? {}) as Record<string, boolean>;
+        if (cats[category] === true) userIds.push(row.app_user_id);
+      }
+
+      if (data.length < RECIPIENT_PAGE_SIZE) break;
+      from += RECIPIENT_PAGE_SIZE;
+    }
+
+    return userIds;
+  }
+
+  /**
+   * Send notification to subscribed customers of a shop for a given category.
+   * Reads user_shop_notification_preferences (NOT customer_loyalty_accounts).
    */
   async sendToShopCustomers(
     shopId: string,
@@ -146,26 +242,29 @@ export class PushNotificationService {
       title: string;
       body: string;
       data?: Record<string, any>;
-      notificationType: string;
+      notificationType: NotificationCategory;
     }
   ) {
     try {
-      // Get all app users who have loyalty accounts with this shop
-      const { data: loyaltyAccounts, error } = await supabase
-        .from("customer_loyalty_accounts")
-        .select("app_user_id")
-        .eq("shop_id", shopId);
+      const userIds = await this.resolveSubscribedUserIds(
+        shopId,
+        notification.notificationType
+      );
 
-      if (error) {
-        logger.error("Error fetching loyalty accounts", { error });
-        return { success: false, message: "Error fetching customers" };
+      if (userIds.length === 0) {
+        logger.info("No subscribers for shop+category", {
+          shopId,
+          category: notification.notificationType,
+        });
+        return {
+          success: true,
+          sent: 0,
+          failed: 0,
+          total: 0,
+          message: "No subscribed customers",
+        };
       }
 
-      if (!loyaltyAccounts || loyaltyAccounts.length === 0) {
-        return { success: false, message: "No customers found for shop" };
-      }
-
-      const userIds = loyaltyAccounts.map((acc) => acc.app_user_id);
       return this.sendToUsers(userIds, { ...notification, shopId });
     } catch (error) {
       logger.error("Error in sendToShopCustomers", { error });
@@ -174,12 +273,13 @@ export class PushNotificationService {
   }
 
   /**
-   * Send birthday notifications to customers whose birthday is today
+   * Birthday notifications: requires both a today-DOB match AND an active
+   * subscription with categories.birthday=true.
    */
   async sendBirthdayNotifications() {
     try {
       const today = new Date();
-      const todayMonth = today.getMonth() + 1; // JavaScript months are 0-indexed
+      const todayMonth = today.getMonth() + 1;
       const todayDay = today.getDate();
 
       logger.info("Checking for birthday notifications", {
@@ -187,7 +287,6 @@ export class PushNotificationService {
         day: todayDay,
       });
 
-      // Get all active birthday notification templates
       const { data: templates, error: templateError } = await supabase
         .from("notification_templates")
         .select("*, shops!inner(id, name)")
@@ -206,51 +305,71 @@ export class PushNotificationService {
         return;
       }
 
-      // For each shop with birthday notifications enabled
       for (const template of templates) {
         const shopId = template.shop_id;
 
-        // Find customers whose birthday is today in this shop
-        const { data: customers, error: customerError } = await supabase
-          .from("customer_loyalty_accounts")
-          .select("app_user_id, app_users!inner(date_of_birth)")
-          .eq("shop_id", shopId);
+        // Pull subscribers with categories.birthday=true, paginated.
+        const subscriberIds: string[] = [];
+        let from = 0;
+        while (true) {
+          const to = from + RECIPIENT_PAGE_SIZE - 1;
+          const { data: subs, error: subErr } = await supabase
+            .from("user_shop_notification_preferences")
+            .select("app_user_id, categories")
+            .eq("shop_id", shopId)
+            .range(from, to);
 
-        if (customerError) {
-          logger.error("Error fetching customers for birthday check", {
-            error: customerError,
-            shopId,
-          });
+          if (subErr) {
+            logger.error("Error fetching birthday subscribers", {
+              error: subErr,
+              shopId,
+            });
+            break;
+          }
+          if (!subs || subs.length === 0) break;
+          for (const row of subs) {
+            const cats = (row.categories ?? {}) as Record<string, boolean>;
+            if (cats.birthday === true) subscriberIds.push(row.app_user_id);
+          }
+          if (subs.length < RECIPIENT_PAGE_SIZE) break;
+          from += RECIPIENT_PAGE_SIZE;
+        }
+
+        if (subscriberIds.length === 0) continue;
+
+        // Filter to those whose DOB matches today.
+        const { data: birthdayRows, error: dobError } = await supabase
+          .from("app_users")
+          .select("id, date_of_birth")
+          .in("id", subscriberIds)
+          .not("date_of_birth", "is", null);
+
+        if (dobError) {
+          logger.error("Error fetching DOBs", { error: dobError, shopId });
           continue;
         }
 
-        if (!customers || customers.length === 0) {
-          continue;
-        }
+        const birthdayUserIds = (birthdayRows ?? [])
+          .filter((u) => {
+            if (!u.date_of_birth) return false;
+            const dob = new Date(u.date_of_birth);
+            return (
+              dob.getMonth() + 1 === todayMonth && dob.getDate() === todayDay
+            );
+          })
+          .map((u) => u.id);
 
-        // Filter customers whose birthday is today
-        const birthdayCustomers = customers.filter((customer: any) => {
-          if (!customer.app_users?.date_of_birth) return false;
-
-          const dob = new Date(customer.app_users.date_of_birth);
-          return (
-            dob.getMonth() + 1 === todayMonth && dob.getDate() === todayDay
-          );
-        });
-
-        if (birthdayCustomers.length === 0) {
+        if (birthdayUserIds.length === 0) {
           logger.info("No birthdays today for shop", { shopId });
           continue;
         }
 
-        // Send birthday notifications
-        const userIds = birthdayCustomers.map((c) => c.app_user_id);
         logger.info("Sending birthday notifications", {
           shopId,
-          count: userIds.length,
+          count: birthdayUserIds.length,
         });
 
-        await this.sendToUsers(userIds, {
+        await this.sendToUsers(birthdayUserIds, {
           title: template.title,
           body: template.body,
           data: template.data || {},
@@ -266,18 +385,18 @@ export class PushNotificationService {
   }
 
   /**
-   * Check receipts for delivered status (run this ~15 minutes after sending)
+   * Check Expo receipts for sent notifications. Skips dry-run rows entirely
+   * (they have no ticket id). Deactivates tokens that come back DeviceNotRegistered.
    */
   async checkReceipts() {
     try {
-      // Get notifications with tickets but no delivery confirmation yet
       const { data: pendingNotifications, error } = await supabase
         .from("push_notifications")
-        .select("id, expo_ticket_id")
+        .select("id, expo_ticket_id, expo_push_token")
         .eq("status", "sent")
         .not("expo_ticket_id", "is", null)
         .order("sent_at", { ascending: true })
-        .limit(1000); // Check up to 1000 at a time
+        .limit(1000);
 
       if (error) {
         logger.error("Error fetching pending notifications", { error });
@@ -288,13 +407,20 @@ export class PushNotificationService {
         return;
       }
 
+      // Map ticket -> token so we can deactivate tokens on DeviceNotRegistered.
+      const ticketToToken = new Map<string, string | null>();
+      for (const n of pendingNotifications) {
+        if (n.expo_ticket_id) {
+          ticketToToken.set(n.expo_ticket_id, n.expo_push_token ?? null);
+        }
+      }
+
       const ticketIds = pendingNotifications
         .map((n) => n.expo_ticket_id)
         .filter((id): id is string => id !== null);
 
       if (ticketIds.length === 0) return;
 
-      // Check receipts in chunks
       const chunks = this.expo.chunkPushNotificationReceiptIds(ticketIds);
 
       for (const chunk of chunks) {
@@ -303,14 +429,11 @@ export class PushNotificationService {
             chunk
           );
 
-          // Update notification records based on receipts
           for (const [ticketId, receipt] of Object.entries(receipts)) {
             if (receipt.status === "ok") {
               await supabase
                 .from("push_notifications")
-                .update({
-                  status: "delivered",
-                })
+                .update({ status: "delivered" })
                 .eq("expo_ticket_id", ticketId);
             } else if (receipt.status === "error") {
               await supabase
@@ -321,13 +444,22 @@ export class PushNotificationService {
                 })
                 .eq("expo_ticket_id", ticketId);
 
-              // Handle DeviceNotRegistered error by deactivating token
               if (receipt.details?.error === "DeviceNotRegistered") {
-                logger.warn("Device not registered, deactivating token", {
-                  ticketId,
-                });
-                // Note: We'd need to store the token with the notification to do this properly
-                // For now, we'll just log it
+                const token = ticketToToken.get(ticketId);
+                if (token) {
+                  logger.warn("Deactivating token (DeviceNotRegistered)", {
+                    ticketId,
+                  });
+                  await supabase
+                    .from("push_tokens")
+                    .update({ is_active: false })
+                    .eq("expo_push_token", token);
+                } else {
+                  logger.warn(
+                    "DeviceNotRegistered but no token recorded on notification",
+                    { ticketId }
+                  );
+                }
               }
             }
           }

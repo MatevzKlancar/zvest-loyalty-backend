@@ -15,6 +15,14 @@ const envSchema = z.object({
   // POS Provider API Keys (comma-separated format: name:api_key)
   // Example: "Provider1:api_key_1,Provider2:api_key_2"
   POS_PROVIDERS: z.string().default(""),
+
+  // Global push delivery kill switch. When false, the service builds messages,
+  // resolves recipients, writes push_notifications rows with status='dry_run',
+  // and skips the Expo HTTP call. Flip to true to actually deliver.
+  PUSH_NOTIFICATIONS_DELIVERY_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v.toLowerCase() === "true"),
 });
 
 export const env = envSchema.parse(process.env);
