@@ -30,6 +30,7 @@ BEGIN
   -- Unschedule any prior versions (no-op if they don't exist).
   PERFORM cron.unschedule(jobname) FROM cron.job WHERE jobname IN (
     'zvest-dispatch-scheduled-notifications',
+    'zvest-dispatch-digest',
     'zvest-materialize-notification-plans',
     'zvest-birthday-notifications',
     'zvest-check-notification-receipts',
@@ -55,7 +56,26 @@ BEGIN
     )
   );
 
-  -- 2) Plan materializer — once a day at 02:00 UTC. Materializes today's
+  -- 2) Digest dispatcher — every 5 minutes. Reads notification_outbox rows
+  --    staged by the main dispatcher (daily_meal/specials), groups by user,
+  --    and ships either the original push (single source) or a bundled
+  --    digest push (multi-source) so a user following 5 shops gets one push.
+  PERFORM cron.schedule(
+    'zvest-dispatch-digest',
+    '*/5 * * * *',
+    format(
+      $sql$SELECT net.http_post(
+        url := %L,
+        headers := jsonb_build_object('X-Job-Secret', %L, 'Content-Type', 'application/json'),
+        body := '{}'::jsonb,
+        timeout_milliseconds := 60000
+      );$sql$,
+      base_url || '/api/internal/jobs/dispatch-digest',
+      secret
+    )
+  );
+
+  -- 3) Plan materializer — once a day at 02:00 UTC. Materializes today's
   --    weekly-plan entries into scheduled_notifications. Run *before* any
   --    plausible send_time_local in any shop's tz.
   PERFORM cron.schedule(
@@ -73,7 +93,7 @@ BEGIN
     )
   );
 
-  -- 3) Birthday notifications — daily at 07:00 UTC (≈ 09:00 Europe/Ljubljana
+  -- 4) Birthday notifications — daily at 07:00 UTC (≈ 09:00 Europe/Ljubljana
   --    most of the year; close enough until we make this per-shop).
   PERFORM cron.schedule(
     'zvest-birthday-notifications',
@@ -90,7 +110,7 @@ BEGIN
     )
   );
 
-  -- 4) Receipt checker — every 15 minutes. Updates push_notifications.status
+  -- 5) Receipt checker — every 15 minutes. Updates push_notifications.status
   --    based on Expo receipts; deactivates DeviceNotRegistered tokens.
   PERFORM cron.schedule(
     'zvest-check-notification-receipts',
@@ -107,7 +127,7 @@ BEGIN
     )
   );
 
-  -- 5) Stale token sweep — weekly Sunday 03:00 UTC. Low priority.
+  -- 6) Stale token sweep — weekly Sunday 03:00 UTC. Low priority.
   PERFORM cron.schedule(
     'zvest-cleanup-stale-push-tokens',
     '0 3 * * 0',

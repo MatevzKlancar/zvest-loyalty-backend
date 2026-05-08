@@ -7,6 +7,7 @@ import { runReceiptChecker } from "../../jobs/check-notification-receipts";
 import { runDispatcher } from "../../jobs/dispatch-scheduled-notifications";
 import { runMaterializer } from "../../jobs/materialize-notification-plans";
 import { runCleanup } from "../../jobs/cleanup-stale-push-tokens";
+import { runDigest } from "../../jobs/dispatch-digest";
 
 /**
  * Internal job endpoints triggered by pg_cron via pg_net. Each route is the
@@ -60,6 +61,11 @@ function wrap(name: string, runner: () => Promise<void>) {
 internalJobsController.post(
   "/dispatch-scheduled-notifications",
   wrap("dispatch-scheduled-notifications", runDispatcher)
+);
+
+internalJobsController.post(
+  "/dispatch-digest",
+  wrap("dispatch-digest", runDigest)
 );
 
 internalJobsController.post(

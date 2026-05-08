@@ -273,6 +273,81 @@ export class PushNotificationService {
   }
 
   /**
+   * Stages a batchable send (daily_meal/specials) into notification_outbox
+   * instead of pushing immediately. The digest job groups outbox rows by
+   * (user, digest_window_at) and collapses overlapping shops into one push.
+   *
+   * digestWindowAt is the bucket the recipient lands in. Callers should round
+   * to a 5-min boundary so multiple shops sending around the same time
+   * naturally collide. We round here defensively as well.
+   */
+  async enqueueForShopCustomers(
+    shopId: string,
+    notification: {
+      title: string;
+      body: string;
+      data?: Record<string, any>;
+      notificationType: NotificationCategory;
+      sourceScheduledId?: string | null;
+      source?: "scheduled" | "plan" | "manual";
+    },
+    digestWindowAt: Date
+  ) {
+    try {
+      const userIds = await this.resolveSubscribedUserIds(
+        shopId,
+        notification.notificationType
+      );
+
+      if (userIds.length === 0) {
+        logger.info("No subscribers to enqueue", {
+          shopId,
+          category: notification.notificationType,
+        });
+        return { success: true, staged: 0 };
+      }
+
+      const windowMs = 5 * 60 * 1000;
+      const bucketMs = Math.floor(digestWindowAt.getTime() / windowMs) * windowMs;
+      const bucketIso = new Date(bucketMs).toISOString();
+
+      const rows = userIds.map((uid) => ({
+        app_user_id: uid,
+        shop_id: shopId,
+        source_scheduled_id: notification.sourceScheduledId ?? null,
+        source: notification.source ?? "scheduled",
+        notification_type: notification.notificationType,
+        title: notification.title,
+        body: notification.body,
+        data: notification.data ?? {},
+        digest_window_at: bucketIso,
+        status: "queued",
+      }));
+
+      const { error } = await supabase
+        .from("notification_outbox")
+        .insert(rows);
+
+      if (error) {
+        logger.error("Error staging outbox rows", { error, shopId });
+        return { success: false, staged: 0, message: "Stage failed" };
+      }
+
+      logger.info("Staged outbox rows", {
+        shopId,
+        category: notification.notificationType,
+        staged: rows.length,
+        digestWindowAt: bucketIso,
+      });
+
+      return { success: true, staged: rows.length };
+    } catch (error) {
+      logger.error("Error in enqueueForShopCustomers", { error });
+      return { success: false, staged: 0, message: "Internal error" };
+    }
+  }
+
+  /**
    * Birthday notifications: requires both a today-DOB match AND an active
    * subscription with categories.birthday=true.
    */

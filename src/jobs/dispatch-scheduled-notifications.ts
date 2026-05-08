@@ -59,17 +59,41 @@ async function runDispatcher() {
     }
 
     try {
-      const result = await pushNotificationService.sendToShopCustomers(
-        row.shop_id,
-        {
-          title: row.title,
-          body: row.body,
-          data: row.data || {},
-          notificationType: row.notification_type,
-        }
-      );
+      // Batchable categories (daily_meal, specials) get staged into the outbox
+      // for the digest job to collate. Personal/urgent (manual) sends fire
+      // immediately so admins still get one-off broadcasts in real time.
+      const isBatchable =
+        row.notification_type === "daily_meal" ||
+        row.notification_type === "specials";
 
-      const total = "total" in result ? result.total : 0;
+      let total = 0;
+
+      if (isBatchable) {
+        const staged = await pushNotificationService.enqueueForShopCustomers(
+          row.shop_id,
+          {
+            title: row.title,
+            body: row.body,
+            data: row.data || {},
+            notificationType: row.notification_type,
+            sourceScheduledId: row.id,
+            source: "scheduled",
+          },
+          new Date(row.scheduled_for)
+        );
+        total = "staged" in staged ? staged.staged : 0;
+      } else {
+        const result = await pushNotificationService.sendToShopCustomers(
+          row.shop_id,
+          {
+            title: row.title,
+            body: row.body,
+            data: row.data || {},
+            notificationType: row.notification_type,
+          }
+        );
+        total = "total" in result ? (result.total ?? 0) : 0;
+      }
 
       await supabase
         .from("scheduled_notifications")
@@ -84,6 +108,8 @@ async function runDispatcher() {
       logger.info("Dispatched scheduled notification", {
         id: row.id,
         shopId: row.shop_id,
+        category: row.notification_type,
+        path: isBatchable ? "outbox" : "immediate",
         recipients: total,
       });
     } catch (err) {
