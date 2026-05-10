@@ -4,19 +4,19 @@ import { supabase } from "../config/database";
 /**
  * Notification Plan Materializer
  *
- * Runs once per day (early morning UTC). For every active plan, finds entries
- * whose day_of_week == today (in the plan's timezone), computes the absolute
- * UTC timestamp at which the entry should fire today (send_time_local
- * interpreted in plan.timezone), and inserts a row into scheduled_notifications.
+ * For every active plan, finds entries whose day_of_week == today (in the
+ * plan's timezone), computes the absolute UTC timestamp at which the entry
+ * should fire today, and inserts a row into scheduled_notifications.
  *
- * The existing dispatcher (every minute) picks up the materialized rows.
+ * Idempotency: dedupe on (source_plan_entry_id, UTC day). At most one row
+ * per plan entry per UTC day. A partial unique index in the DB enforces this
+ * so concurrent materializer runs can't double-insert. Editing a plan entry's
+ * send_time_local mid-day is safe — the existing pending row is updated in
+ * place rather than a duplicate row inserted.
  *
- * Idempotent: a duplicate run on the same day for the same plan/entry is a no-op
- * because we look up an existing scheduled_notifications row for the same
- * (shop_id, scheduled_for, notification_type, title) before inserting.
- *
- * Cadence: daily at 02:00 UTC (or earlier if you have shops in earlier zones —
- * pick a time that's before any plan's earliest send_time_local in any timezone).
+ * Cadence: every 15 minutes. Closes the "create plan after 02:00 UTC, won't
+ * fire today" gap; worst-case latency between saving a plan and it being
+ * materialized is <15 min.
  */
 
 type Plan = {
@@ -194,8 +194,8 @@ async function runMaterializer() {
         entry.send_time_local
       );
 
-      // If the computed time is already in the past today, skip — the user
-      // missed today's window. Materializer doesn't backfill.
+      // If the computed time is already in the past today, skip — we don't
+      // backfill missed windows.
       if (scheduledForUtc.getTime() < now.getTime() - 60_000) {
         logger.info("Skipping past-due entry", {
           planId: plan.id,
@@ -205,26 +205,75 @@ async function runMaterializer() {
         continue;
       }
 
-      // Idempotency check: don't double-insert if a previous materializer run
-      // already wrote this row today.
+      // Lookup any existing row materialized from this entry on the same UTC day.
       const dayStart = new Date(scheduledForUtc);
       dayStart.setUTCHours(0, 0, 0, 0);
       const dayEnd = new Date(scheduledForUtc);
       dayEnd.setUTCHours(23, 59, 59, 999);
 
-      const { data: existing } = await supabase
+      const { data: existing, error: existingErr } = await supabase
         .from("scheduled_notifications")
-        .select("id")
-        .eq("shop_id", plan.shop_id)
-        .eq("notification_type", entry.notification_type)
-        .eq("title", entry.title)
+        .select("id, scheduled_for, title, body, data, status")
+        .eq("source_plan_entry_id", entry.id)
         .gte("scheduled_for", dayStart.toISOString())
         .lte("scheduled_for", dayEnd.toISOString())
         .limit(1)
         .maybeSingle();
 
+      if (existingErr) {
+        logger.error("Failed to query existing materialized row", {
+          error: existingErr,
+          planId: plan.id,
+          entryId: entry.id,
+        });
+        continue;
+      }
+
       if (existing) {
-        skippedDuplicate++;
+        // Don't touch rows the dispatcher has already acted on.
+        if (existing.status !== "scheduled") {
+          skippedDuplicate++;
+          continue;
+        }
+
+        // If the entry was edited (time, title, body, data), reflect it on the
+        // pending row. Skip the write when nothing actually changed to avoid
+        // pointless updated_at churn.
+        const targetIso = scheduledForUtc.toISOString();
+        const newData = entry.data ?? {};
+        const dataChanged =
+          JSON.stringify(existing.data ?? {}) !== JSON.stringify(newData);
+        const needsUpdate =
+          existing.scheduled_for !== targetIso ||
+          existing.title !== entry.title ||
+          existing.body !== entry.body ||
+          dataChanged;
+
+        if (!needsUpdate) {
+          skippedDuplicate++;
+          continue;
+        }
+
+        const { error: updateErr } = await supabase
+          .from("scheduled_notifications")
+          .update({
+            scheduled_for: targetIso,
+            title: entry.title,
+            body: entry.body,
+            data: newData,
+          })
+          .eq("id", existing.id);
+
+        if (updateErr) {
+          logger.error("Failed to update materialized row", {
+            error: updateErr,
+            planId: plan.id,
+            entryId: entry.id,
+            rowId: existing.id,
+          });
+          continue;
+        }
+        materialized++;
         continue;
       }
 
@@ -232,6 +281,7 @@ async function runMaterializer() {
         .from("scheduled_notifications")
         .insert({
           shop_id: plan.shop_id,
+          source_plan_entry_id: entry.id,
           notification_type: entry.notification_type,
           title: entry.title,
           body: entry.body,
@@ -241,7 +291,9 @@ async function runMaterializer() {
         });
 
       if (insertErr) {
-        logger.error("Failed to materialize entry", {
+        // Likely a race with another concurrent materializer — the partial
+        // unique index will reject the second insert. Treat as success-equivalent.
+        logger.warn("Insert failed, possibly a race; will recompute next tick", {
           error: insertErr,
           planId: plan.id,
           entryId: entry.id,
