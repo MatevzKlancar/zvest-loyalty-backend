@@ -1,6 +1,8 @@
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
+import { Expo, ExpoPushMessage } from "expo-server-sdk";
 import { z } from "zod";
 import { supabase } from "../../config/database";
+import { env } from "../../config/env";
 import { logger } from "../../config/logger";
 import { standardResponse } from "../../middleware/error";
 import { UnifiedAuthContext } from "../../middleware/unified-auth";
@@ -1018,6 +1020,236 @@ notificationsController.openapi(getNotificationAnalyticsRoute, async (c) => {
     );
   } catch (error) {
     logger.error("Error getting notification analytics", { error });
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
+// =============================================================================
+// POST /notifications/test-send — direct send to a single token or email
+// =============================================================================
+// Debug-only endpoint. Bypasses subscription preferences, broadcast quotas,
+// and the digest pipeline. Accepts EITHER a raw expo_push_token OR an email
+// (in which case we send to every active token for that user).
+const testSendExpo = new Expo({ useFcmV1: true });
+
+const testSendRoute = createRoute({
+  method: "post",
+  path: "/notifications/test-send",
+  summary: "Send a test push notification to a specific token or user",
+  description:
+    "Debug endpoint. Sends immediately, bypassing subscription and quota checks. " +
+    "Provide either expo_push_token (raw) or email (resolves to all active tokens for that user).",
+  tags: ["Shop Management"],
+  security: [{ BearerAuth: [] }],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z
+            .object({
+              expo_push_token: z.string().optional(),
+              email: z.string().email().optional(),
+              title: z.string().min(1).max(100),
+              body: z.string().min(1).max(500),
+              data: z.record(z.any()).optional(),
+            })
+            .refine((v) => !!(v.expo_push_token || v.email), {
+              message: "Provide expo_push_token or email",
+            }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Test notification dispatched",
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            data: z.object({
+              attempted: z.number(),
+              sent: z.number(),
+              failed: z.number(),
+              dry_run: z.number(),
+              tickets: z.array(
+                z.object({
+                  token: z.string(),
+                  status: z.string(),
+                  error: z.string().nullable(),
+                })
+              ),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+notificationsController.openapi(testSendRoute, async (c) => {
+  try {
+    const shop = c.get("shop");
+    const { expo_push_token, email, title, body, data } = c.req.valid("json");
+
+    // 1) Resolve target tokens
+    type TargetToken = { token: string; app_user_id: string | null };
+    const targets: TargetToken[] = [];
+
+    if (expo_push_token) {
+      // Try to find the owning user (informational only — send works regardless)
+      const { data: row } = await supabase
+        .from("push_tokens")
+        .select("app_user_id")
+        .eq("expo_push_token", expo_push_token)
+        .maybeSingle();
+      targets.push({ token: expo_push_token, app_user_id: row?.app_user_id ?? null });
+    } else if (email) {
+      const { data: user, error: userErr } = await supabase
+        .from("app_users")
+        .select("id")
+        .eq("email", email)
+        .maybeSingle();
+      if (userErr) {
+        logger.error("test-send: user lookup failed", { error: userErr });
+        return c.json(standardResponse(500, "User lookup failed"), 500);
+      }
+      if (!user) {
+        return c.json(standardResponse(404, "No user with that email"), 404);
+      }
+      const { data: tokens } = await supabase
+        .from("push_tokens")
+        .select("expo_push_token")
+        .eq("app_user_id", user.id)
+        .eq("is_active", true);
+      for (const t of tokens ?? []) {
+        targets.push({ token: t.expo_push_token, app_user_id: user.id });
+      }
+      if (targets.length === 0) {
+        return c.json(
+          standardResponse(404, "User has no active push tokens"),
+          404
+        );
+      }
+    }
+
+    // 2) Build messages, drop invalid tokens
+    const tickets: { token: string; status: string; error: string | null }[] = [];
+    const messages: ExpoPushMessage[] = [];
+    const validTargets: TargetToken[] = [];
+    for (const t of targets) {
+      if (!Expo.isExpoPushToken(t.token)) {
+        tickets.push({ token: t.token, status: "invalid_token", error: "Not a valid Expo push token" });
+        continue;
+      }
+      messages.push({
+        to: t.token,
+        sound: "default",
+        title,
+        body,
+        data: { ...(data || {}), test: true },
+        priority: "high",
+      });
+      validTargets.push(t);
+    }
+
+    if (messages.length === 0) {
+      return c.json(
+        standardResponse(400, "No valid push tokens to send to"),
+        400
+      );
+    }
+
+    // 3) Dispatch — respects the same kill switch as the main service
+    const deliveryEnabled = env.PUSH_NOTIFICATIONS_DELIVERY_ENABLED;
+    let sent = 0;
+    let failed = 0;
+    let dryRun = 0;
+
+    if (!deliveryEnabled) {
+      dryRun = validTargets.length;
+      for (const t of validTargets) {
+        tickets.push({ token: t.token, status: "dry_run", error: null });
+      }
+    } else {
+      const chunks = testSendExpo.chunkPushNotifications(messages);
+      let i = 0;
+      for (const chunk of chunks) {
+        try {
+          const ticketChunk = await testSendExpo.sendPushNotificationsAsync(chunk);
+          for (const ticket of ticketChunk) {
+            const target = validTargets[i++];
+            if (ticket.status === "ok") {
+              sent++;
+              tickets.push({ token: target.token, status: "sent", error: null });
+            } else {
+              failed++;
+              tickets.push({
+                token: target.token,
+                status: "error",
+                error: ticket.message ?? "Unknown error",
+              });
+            }
+          }
+        } catch (err) {
+          logger.error("test-send: chunk dispatch failed", { error: err });
+          for (let j = 0; j < chunk.length; j++) {
+            const target = validTargets[i++];
+            failed++;
+            tickets.push({
+              token: target.token,
+              status: "error",
+              error: err instanceof Error ? err.message : "Dispatch failed",
+            });
+          }
+        }
+      }
+    }
+
+    // 4) Record for the history tab — best-effort
+    const records = validTargets.map((t, idx) => {
+      const result = tickets.find((x) => x.token === t.token) ?? tickets[idx];
+      return {
+        app_user_id: t.app_user_id,
+        shop_id: shop.id,
+        notification_type: "manual",
+        title,
+        body,
+        data: { ...(data || {}), test: true },
+        expo_push_token: t.token,
+        expo_ticket_id: null,
+        status: result?.status === "sent" ? "sent" : result?.status === "dry_run" ? "dry_run" : "error",
+        error_message: result?.error ?? null,
+        sent_at: new Date().toISOString(),
+      };
+    });
+    if (records.length > 0) {
+      const { error: insErr } = await supabase.from("push_notifications").insert(records);
+      if (insErr) {
+        logger.warn("test-send: failed to record history", { error: insErr });
+      }
+    }
+
+    logger.info("test-send dispatched", {
+      shopId: shop.id,
+      attempted: targets.length,
+      sent,
+      failed,
+      dryRun,
+    });
+
+    return c.json(
+      standardResponse(200, "Test notification dispatched", {
+        attempted: targets.length,
+        sent,
+        failed,
+        dry_run: dryRun,
+        tickets,
+      })
+    );
+  } catch (error) {
+    logger.error("Error in test-send", { error });
     return c.json(standardResponse(500, "Internal server error"), 500);
   }
 });
