@@ -384,6 +384,27 @@ app.openapi(scanQRRoute, async (c) => {
       // Note: Transaction was already updated, so we continue
     }
 
+    // Auto-enroll the user in this shop's push notifications on first successful
+    // points award. ON CONFLICT DO NOTHING — re-scans never overwrite a row the
+    // user has manually muted via the mobile toggle.
+    const { error: notifPrefError } = await supabase
+      .from("user_shop_notification_preferences")
+      .insert({
+        app_user_id: appUser.id,
+        shop_id: transaction.shop_id,
+      })
+      .select()
+      .single();
+
+    if (notifPrefError && notifPrefError.code !== "23505") {
+      // 23505 = unique_violation (row already exists) — expected, swallow it.
+      logger.warn("Failed to auto-enroll notification preference", {
+        error: notifPrefError,
+        app_user_id: appUser.id,
+        shop_id: transaction.shop_id,
+      });
+    }
+
     // Log the action
     await supabase.from("transaction_logs").insert({
       transaction_id: transaction.id,
@@ -1316,6 +1337,168 @@ app.openapi(unregisterPushTokenRoute, async (c) => {
     return c.json(standardResponse(200, "Push token deactivated successfully"));
   } catch (error) {
     logger.error("Error unregistering push token:", error);
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
+// ===========================
+// SHOP NOTIFICATION PREFERENCES
+// ===========================
+
+// Categories that the master toggle controls. Keep in sync with the
+// user_shop_notification_preferences.categories JSONB schema.
+const NOTIFICATION_CATEGORIES = [
+  "daily_meal",
+  "specials",
+  "birthday",
+  "coupon_ready",
+  "manual",
+  "points_earned",
+] as const;
+
+function buildCategoriesPayload(enabled: boolean) {
+  return Object.fromEntries(
+    NOTIFICATION_CATEGORIES.map((key) => [key, enabled])
+  );
+}
+
+function isAnyCategoryEnabled(categories: Record<string, unknown> | null | undefined) {
+  if (!categories) return false;
+  return NOTIFICATION_CATEGORIES.some((key) => categories[key] === true);
+}
+
+// GET /api/app/shop-notifications/:shopId
+const getShopNotificationsRoute = createRoute({
+  method: "get",
+  path: "/shop-notifications/:shopId",
+  summary: "Get notification preference for a shop",
+  description:
+    "Returns whether the authenticated user is opted in to push notifications for a given shop. No row in user_shop_notification_preferences = not enabled.",
+  tags: ["Customer App"],
+  request: {
+    params: z.object({
+      shopId: z.string().uuid(),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Preference fetched",
+      content: {
+        "application/json": {
+          schema: z.object({
+            status: z.number(),
+            message: z.string(),
+            data: z.object({
+              enabled: z.boolean(),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+app.openapi(getShopNotificationsRoute, async (c) => {
+  try {
+    const appUser = c.get("appUser");
+    const { shopId } = c.req.valid("param");
+
+    const { data, error } = await supabase
+      .from("user_shop_notification_preferences")
+      .select("categories")
+      .eq("app_user_id", appUser.id)
+      .eq("shop_id", shopId)
+      .maybeSingle();
+
+    if (error) {
+      logger.error("Error fetching shop notification preference", { error });
+      return c.json(
+        standardResponse(500, "Failed to fetch notification preference"),
+        500
+      );
+    }
+
+    const enabled = isAnyCategoryEnabled(data?.categories);
+    return c.json(
+      standardResponse(200, "Notification preference fetched", { enabled })
+    );
+  } catch (error) {
+    logger.error("Error fetching shop notification preference:", error);
+    return c.json(standardResponse(500, "Internal server error"), 500);
+  }
+});
+
+// PUT /api/app/shop-notifications/:shopId
+const updateShopNotificationsRoute = createRoute({
+  method: "put",
+  path: "/shop-notifications/:shopId",
+  summary: "Toggle notification preference for a shop",
+  description:
+    "Sets all notification categories for the given shop to the supplied boolean. Upserts the row if it doesn't exist.",
+  tags: ["Customer App"],
+  request: {
+    params: z.object({
+      shopId: z.string().uuid(),
+    }),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            enabled: z.boolean(),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Preference updated",
+      content: {
+        "application/json": {
+          schema: z.object({
+            status: z.number(),
+            message: z.string(),
+            data: z.object({
+              enabled: z.boolean(),
+            }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+app.openapi(updateShopNotificationsRoute, async (c) => {
+  try {
+    const appUser = c.get("appUser");
+    const { shopId } = c.req.valid("param");
+    const { enabled } = c.req.valid("json");
+
+    const { error } = await supabase
+      .from("user_shop_notification_preferences")
+      .upsert(
+        {
+          app_user_id: appUser.id,
+          shop_id: shopId,
+          categories: buildCategoriesPayload(enabled),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "app_user_id,shop_id" }
+      );
+
+    if (error) {
+      logger.error("Error updating shop notification preference", { error });
+      return c.json(
+        standardResponse(500, "Failed to update notification preference"),
+        500
+      );
+    }
+
+    return c.json(
+      standardResponse(200, "Notification preference updated", { enabled })
+    );
+  } catch (error) {
+    logger.error("Error updating shop notification preference:", error);
     return c.json(standardResponse(500, "Internal server error"), 500);
   }
 });
