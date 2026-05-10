@@ -84,6 +84,7 @@ couponsController.openapi(createCouponRoute, async (c) => {
         expires_at: couponData.expires_at,
         image_url: couponData.image_url,
         is_active: couponData.is_active,
+        is_birthday_only: couponData.is_birthday_only,
         shop_id: shop.id,
       })
       .select()

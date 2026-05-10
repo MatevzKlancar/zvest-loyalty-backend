@@ -92,6 +92,7 @@ export const createCouponSchema = z.object({
     .union([z.string().url(), z.literal("").transform(() => undefined)])
     .optional(),
   is_active: z.boolean().default(true),
+  is_birthday_only: z.boolean().default(false),
 });
 
 export const updateCouponSchema = createCouponSchema.partial();
@@ -114,6 +115,7 @@ export const couponResponseSchema = z.object({
   used_count: z.number(),
   image_url: z.string().nullable(),
   is_active: z.boolean(),
+  is_birthday_only: z.boolean(),
   created_at: z.string(),
   updated_at: z.string(),
 });
