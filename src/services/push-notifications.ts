@@ -439,9 +439,46 @@ export class PushNotificationService {
           continue;
         }
 
+        // Per-(user, shop, day) dedupe. The cron is daily at 07:00 UTC, but
+        // a manual trigger, retry, or any future cadence change must NOT
+        // re-push a birthday a user already received today for this shop.
+        const todayUtcStart = new Date();
+        todayUtcStart.setUTCHours(0, 0, 0, 0);
+        const { data: alreadySent, error: dedupeError } = await supabase
+          .from("push_notifications")
+          .select("app_user_id")
+          .eq("shop_id", shopId)
+          .eq("notification_type", "birthday")
+          .gte("created_at", todayUtcStart.toISOString())
+          .in("app_user_id", birthdayUserIds);
+
+        if (dedupeError) {
+          logger.error("Birthday dedupe lookup failed; skipping shop to avoid double-push", {
+            error: dedupeError,
+            shopId,
+          });
+          continue;
+        }
+
+        const alreadySentIds = new Set(
+          (alreadySent ?? []).map((r) => r.app_user_id)
+        );
+        const toSendUserIds = birthdayUserIds.filter(
+          (id) => !alreadySentIds.has(id)
+        );
+
+        if (toSendUserIds.length === 0) {
+          logger.info("All birthday recipients for shop already pushed today", {
+            shopId,
+            matched: birthdayUserIds.length,
+          });
+          continue;
+        }
+
         logger.info("Sending birthday notifications", {
           shopId,
-          count: birthdayUserIds.length,
+          count: toSendUserIds.length,
+          dedupedSkipped: birthdayUserIds.length - toSendUserIds.length,
         });
 
         // If the template has a coupon_id, surface it in the push payload so the
@@ -453,7 +490,7 @@ export class PushNotificationService {
           ? { ...baseData, coupon_id: (template as any).coupon_id }
           : baseData;
 
-        await this.sendToUsers(birthdayUserIds, {
+        await this.sendToUsers(toSendUserIds, {
           title: template.title,
           body: template.body,
           data,

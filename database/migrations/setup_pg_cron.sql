@@ -75,12 +75,15 @@ BEGIN
     )
   );
 
-  -- 3) Plan materializer — once a day at 02:00 UTC. Materializes today's
-  --    weekly-plan entries into scheduled_notifications. Run *before* any
-  --    plausible send_time_local in any shop's tz.
+  -- 3) Plan materializer — every 15 minutes. Materializes today's weekly-plan
+  --    entries into scheduled_notifications. 15 min (vs daily) closes the
+  --    "created a plan after 02:00 UTC, won't fire today" usability gap; worst-
+  --    case latency between creating a plan and it being live is now <15 min.
+  --    Idempotent — duplicate runs on the same day for the same (shop_id,
+  --    scheduled_for-day, type, title) are no-ops.
   PERFORM cron.schedule(
     'zvest-materialize-notification-plans',
-    '0 2 * * *',
+    '*/15 * * * *',
     format(
       $sql$SELECT net.http_post(
         url := %L,
@@ -94,7 +97,9 @@ BEGIN
   );
 
   -- 4) Birthday notifications — daily at 07:00 UTC (≈ 09:00 Europe/Ljubljana
-  --    most of the year; close enough until we make this per-shop).
+  --    most of the year; close enough until we make this per-shop). The
+  --    underlying sender dedupes per (user, shop, UTC-day) via push_notifications,
+  --    so a manual re-trigger or schedule change will not double-push.
   PERFORM cron.schedule(
     'zvest-birthday-notifications',
     '0 7 * * *',
