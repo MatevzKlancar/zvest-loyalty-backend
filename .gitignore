@@ -8,9 +8,14 @@ config.yml
 secrets.json
 
 # API keys and sensitive data
-*secret*
-*key*
-*token*
+# Scoped to dotfiles/config to avoid swallowing source files like
+# cleanup-stale-push-tokens.ts or generate-api-keys.ts.
+.*secret*
+.*key*
+.*token*
+*.secret
+*.secrets
+secrets.*
 *.pem
 *.p12
 *.pfx
